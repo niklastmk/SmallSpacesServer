@@ -134,10 +134,20 @@ app.post('/api/designs', (req, res) => {
 // Browse designs
 app.get('/api/designs', (req, res) => {
     try {
-        // For metadata-only responses, return all data by default
-        // Client can specify limit if needed for UI pagination
-        const offset = parseInt(req.query.offset) || 0;
-        const limit = parseInt(req.query.limit) || Number.MAX_SAFE_INTEGER; // Return all by default
+        // Support both old page-based and new offset-based parameters
+        let offset, limit;
+        
+        if (req.query.offset !== undefined) {
+            // New offset-based approach
+            offset = parseInt(req.query.offset) || 0;
+            limit = parseInt(req.query.limit) || 20;
+        } else {
+            // Legacy page-based approach (for compatibility)
+            const page = parseInt(req.query.page) || 0;
+            const pageSize = parseInt(req.query.pageSize) || 20;
+            offset = page * pageSize;
+            limit = pageSize;
+        }
 
         const allMetadata = loadMetadata();
         
