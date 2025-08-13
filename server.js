@@ -156,16 +156,26 @@ app.get('/api/designs', (req, res) => {
         
         // Sort based on the specified mode
         if (sortMode === 'downloads') {
-            // Sort by download count (highest first), then by upload date (newest first)
+            // Sort by download count (highest first), then by upload date (newest first), then by ID
             allMetadata.sort((a, b) => {
                 if (b.download_count !== a.download_count) {
                     return b.download_count - a.download_count;
                 }
-                return new Date(b.upload_date) - new Date(a.upload_date);
+                if (new Date(b.upload_date).getTime() !== new Date(a.upload_date).getTime()) {
+                    return new Date(b.upload_date) - new Date(a.upload_date);
+                }
+                // If dates are equal, sort by ID for consistent ordering
+                return a.id.localeCompare(b.id);
             });
         } else {
-            // Default: Sort by upload date (newest first)
-            allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+            // Default: Sort by upload date (newest first), then by ID
+            allMetadata.sort((a, b) => {
+                if (new Date(b.upload_date).getTime() !== new Date(a.upload_date).getTime()) {
+                    return new Date(b.upload_date) - new Date(a.upload_date);
+                }
+                // If dates are equal, sort by ID for consistent ordering
+                return a.id.localeCompare(b.id);
+            });
         }
         
 
@@ -195,12 +205,16 @@ app.get('/api/designs/top', (req, res) => {
         
         const allMetadata = loadMetadata();
         
-        // Sort by download count (highest first), then by upload date (newest first)
+        // Sort by download count (highest first), then by upload date (newest first), then by ID
         allMetadata.sort((a, b) => {
             if (b.download_count !== a.download_count) {
                 return b.download_count - a.download_count;
             }
-            return new Date(b.upload_date) - new Date(a.upload_date);
+            if (new Date(b.upload_date).getTime() !== new Date(a.upload_date).getTime()) {
+                return new Date(b.upload_date) - new Date(a.upload_date);
+            }
+            // If dates are equal, sort by ID for consistent ordering
+            return a.id.localeCompare(b.id);
         });
         
         // Take the top designs
