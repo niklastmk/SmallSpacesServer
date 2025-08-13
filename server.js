@@ -86,12 +86,12 @@ app.post('/api/designs', (req, res) => {
         const designFilename = `${finalDesignId}.sav`;
         const designPath = path.join(DESIGNS_DIR, designFilename);
 
-        // Save design file
+        // Save design file (always overwrite)
         if (!saveBase64File(saveData, designPath)) {
             return res.status(500).json({ error: 'Failed to save design file' });
         }
 
-        // Save thumbnail if provided
+        // Save thumbnail if provided (always overwrite)
         let thumbnailUrl = null;
         if (thumbnail) {
             const thumbnailFilename = `${finalDesignId}.png`;
@@ -101,28 +101,48 @@ app.post('/api/designs', (req, res) => {
             }
         }
 
-        // Create metadata entry
-        const designMetadata = {
-            id: finalDesignId,
-            title: title || 'Untitled Design',
-            description: description || '',
-            author_name: authorName || 'Anonymous',
-            level: level || '',
-            download_count: 0,
-            upload_date: new Date().toISOString(),
-            thumbnail_url: thumbnailUrl
-        };
-
-        // Add to metadata
+        // Check if design already exists (update vs create)
         const allMetadata = loadMetadata();
-        allMetadata.push(designMetadata);
+        const existingIndex = allMetadata.findIndex(d => d.id === finalDesignId);
+        
+        if (existingIndex !== -1) {
+            // Update existing design (preserve download_count)
+            const existingDesign = allMetadata[existingIndex];
+            allMetadata[existingIndex] = {
+                id: finalDesignId,
+                title: title || 'Untitled Design',
+                description: description || '',
+                author_name: authorName || 'Anonymous',
+                level: level || '',
+                download_count: existingDesign.download_count, // Preserve download count
+                upload_date: new Date().toISOString(), // Update to current time
+                thumbnail_url: thumbnailUrl || existingDesign.thumbnail_url // Use new thumbnail or keep existing
+            };
+            console.log(`Design updated: ${title} by ${authorName} (ID: ${finalDesignId})`);
+        } else {
+            // Create new design
+            const designMetadata = {
+                id: finalDesignId,
+                title: title || 'Untitled Design',
+                description: description || '',
+                author_name: authorName || 'Anonymous',
+                level: level || '',
+                download_count: 0,
+                upload_date: new Date().toISOString(),
+                thumbnail_url: thumbnailUrl
+            };
+            allMetadata.push(designMetadata);
+            console.log(`Design created: ${title} by ${authorName} (ID: ${finalDesignId})`);
+        }
+        
         saveMetadata(allMetadata);
 
-        console.log(`Design uploaded: ${title} by ${authorName}`);
+        const isUpdate = existingIndex !== -1;
         res.json({ 
             success: true, 
             design_id: finalDesignId,
-            message: 'Design uploaded successfully' 
+            updated: isUpdate,
+            message: isUpdate ? 'Design updated successfully' : 'Design uploaded successfully' 
         });
 
     } catch (error) {
