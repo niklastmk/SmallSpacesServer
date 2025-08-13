@@ -24,8 +24,8 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // Large limit for save data + thumbnails
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Storage directories
-const STORAGE_DIR = path.join(__dirname, 'storage');
+// Storage directories - use persistent volume on Railway Pro
+const STORAGE_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(__dirname, 'storage');
 const DESIGNS_DIR = path.join(STORAGE_DIR, 'designs');
 const THUMBNAILS_DIR = path.join(STORAGE_DIR, 'thumbnails');
 const METADATA_FILE = path.join(STORAGE_DIR, 'metadata.json');
@@ -326,6 +326,8 @@ app.delete('/api/reset', (req, res) => {
 // Start server
 app.listen(PORT, () => {
     console.log(`Small Spaces Design Server running on http://localhost:${PORT}`);
+    console.log(`Storage directory: ${STORAGE_DIR}`);
+    console.log(`Persistent storage: ${process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'ENABLED' : 'LOCAL'}`);
     console.log(`API endpoints:`);
     console.log(`  POST /api/designs - Upload design`);
     console.log(`  GET /api/designs - Browse designs`);
