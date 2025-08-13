@@ -151,8 +151,23 @@ app.get('/api/designs', (req, res) => {
 
         const allMetadata = loadMetadata();
         
-        // Return data in default order (newest first) - client will handle all sorting
-        allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+        // Get sort parameter (default to date sorting for backward compatibility)
+        const sortMode = req.query.sort || 'date';
+        console.log(`Browse request: offset=${offset}, limit=${limit}, sort=${sortMode}`);
+        
+        // Sort based on the specified mode
+        if (sortMode === 'downloads') {
+            // Sort by download count (highest first), then by upload date (newest first)
+            allMetadata.sort((a, b) => {
+                if (b.download_count !== a.download_count) {
+                    return b.download_count - a.download_count;
+                }
+                return new Date(b.upload_date) - new Date(a.upload_date);
+            });
+        } else {
+            // Default: Sort by upload date (newest first)
+            allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+        }
         
 
         // Apply offset and limit
