@@ -351,6 +351,41 @@ app.delete('/api/designs/:id', (req, res) => {
     }
 });
 
+// Admin reset with secret key (production safe)
+app.delete('/api/admin/reset', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+    
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+    
+    try {
+        // Clear all designs
+        if (fs.existsSync(DESIGNS_DIR)) {
+            fs.emptyDirSync(DESIGNS_DIR);
+        }
+        
+        // Clear all thumbnails  
+        if (fs.existsSync(THUMBNAILS_DIR)) {
+            fs.emptyDirSync(THUMBNAILS_DIR);
+        }
+        
+        // Reset metadata
+        fs.writeJsonSync(METADATA_FILE, []);
+        
+        console.log('ADMIN RESET: Server data reset - all designs and metadata cleared');
+        res.json({ 
+            success: true, 
+            message: 'All server data has been cleared via admin reset' 
+        });
+        
+    } catch (error) {
+        console.error('Admin reset error:', error);
+        res.status(500).json({ error: 'Failed to reset server data' });
+    }
+});
+
 // Reset/clear all data (development only)
 app.delete('/api/reset', (req, res) => {
     // Only allow reset in development
