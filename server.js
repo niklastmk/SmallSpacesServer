@@ -302,6 +302,7 @@ app.get('/', (req, res) => {
             'POST /api/designs - Upload design',
             'GET /api/designs - Browse designs', 
             'POST /api/designs/:id/download - Download design',
+            'DELETE /api/designs/:id - Delete design by ID',
             'GET /api/health - Health check'
         ]
     });
@@ -310,6 +311,44 @@ app.get('/', (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
     res.json({ status: 'OK', message: 'Small Spaces Design Server is running' });
+});
+
+// Delete specific design by ID
+app.delete('/api/designs/:id', (req, res) => {
+    try {
+        const designId = req.params.id;
+        const designPath = path.join(DESIGNS_DIR, `${designId}.sav`);
+        const thumbnailPath = path.join(THUMBNAILS_DIR, `${designId}.png`);
+
+        // Check if design exists
+        if (!fs.existsSync(designPath)) {
+            return res.status(404).json({ error: 'Design not found' });
+        }
+
+        // Remove design file
+        fs.removeSync(designPath);
+        
+        // Remove thumbnail if it exists
+        if (fs.existsSync(thumbnailPath)) {
+            fs.removeSync(thumbnailPath);
+        }
+        
+        // Remove from metadata
+        const allMetadata = loadMetadata();
+        const filteredMetadata = allMetadata.filter(d => d.id !== designId);
+        saveMetadata(filteredMetadata);
+        
+        console.log(`Design deleted: ${designId}`);
+        res.json({ 
+            success: true, 
+            message: `Design ${designId} deleted successfully`,
+            deleted_id: designId
+        });
+        
+    } catch (error) {
+        console.error('Delete error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
 });
 
 // Reset/clear all data (development only)
