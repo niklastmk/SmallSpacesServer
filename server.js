@@ -173,52 +173,13 @@ app.get('/api/designs', (req, res) => {
             allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
         }
         
-        // Check if explicit pagination is requested
-        const usePagination = req.query.offset !== undefined || req.query.page !== undefined || req.query.limit !== undefined || req.query.pageSize !== undefined;
+        // ALWAYS return ALL designs - no pagination
+        console.log(`Browse request: returning ALL designs (${allMetadata.length}), sort=${sortMode}`);
         
-        if (usePagination) {
-            // Support both old page-based and new offset-based parameters for explicit pagination
-            let offset, limit;
-            
-            if (req.query.offset !== undefined) {
-                // New offset-based approach
-                offset = parseInt(req.query.offset) || 0;
-                limit = parseInt(req.query.limit) || 20;
-            } else {
-                // Legacy page-based approach (for compatibility)
-                const page = parseInt(req.query.page) || 0;
-                const pageSize = parseInt(req.query.pageSize) || 20;
-                offset = page * pageSize;
-                limit = pageSize;
-            }
-            
-            console.log(`Browse request: offset=${offset}, limit=${limit}, sort=${sortMode}`);
-            
-            // Apply offset and limit
-            const startIndex = offset;
-            const endIndex = offset + limit;
-            const paginatedDesigns = allMetadata.slice(startIndex, endIndex);
-
-            res.json({
-                designs: paginatedDesigns,
-                total: allMetadata.length,
-                offset: offset,
-                limit: limit,
-                has_more: endIndex < allMetadata.length
-            });
-        } else {
-            // Default: Return all designs (with safety limit to prevent abuse)
-            const maxAllowedAll = parseInt(process.env.MAX_ALL_DESIGNS) || 10000;
-            const resultDesigns = allMetadata.slice(0, maxAllowedAll);
-            
-            console.log(`Browse request: returning ALL designs (${resultDesigns.length}), sort=${sortMode}`);
-            
-            res.json({
-                designs: resultDesigns,
-                total: allMetadata.length,
-                truncated: allMetadata.length > maxAllowedAll
-            });
-        }
+        res.json({
+            designs: allMetadata,
+            total: allMetadata.length
+        });
 
     } catch (error) {
         console.error('Browse error:', error);
