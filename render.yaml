@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: smallspaces-design-server
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: storage
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        fromService:
+          type: web
+          property: port

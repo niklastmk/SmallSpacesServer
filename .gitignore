@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Environment variables
+.env
+
+# Storage (Railway will create fresh storage)
+storage/
+
+# Logs
+*.log
+
+# Runtime
+.DS_Store
+Thumbs.db
