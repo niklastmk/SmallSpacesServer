@@ -3,6 +3,7 @@ const cors = require('cors');
 const fs = require('fs-extra');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const sharp = require('sharp');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -68,10 +69,44 @@ function saveBase64File(base64Data, filename) {
     }
 }
 
+async function compressAndSaveThumbnail(base64Data, filename) {
+    try {
+        const buffer = Buffer.from(base64Data, 'base64');
+        
+        // Compress and resize: 400px width, 80% quality JPEG
+        const compressedBuffer = await sharp(buffer)
+            .resize(400, null, { 
+                withoutEnlargement: true,
+                fit: 'inside'
+            })
+            .jpeg({ 
+                quality: 80,
+                progressive: true 
+            })
+            .toBuffer();
+        
+        // Change extension to .jpg for compressed files
+        const jpegFilename = filename.replace(/\.png$/i, '.jpg');
+        fs.writeFileSync(jpegFilename, compressedBuffer);
+        
+        const originalSize = buffer.length;
+        const compressedSize = compressedBuffer.length;
+        const savings = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
+        
+        console.log(`Thumbnail compressed: ${(originalSize/1024/1024).toFixed(1)}MB → ${(compressedSize/1024).toFixed(0)}KB (${savings}% savings)`);
+        
+        return jpegFilename;
+    } catch (error) {
+        console.error('Error compressing thumbnail:', error);
+        // Fallback to original save
+        return saveBase64File(base64Data, filename) ? filename : null;
+    }
+}
+
 // API Routes
 
 // Upload design
-app.post('/api/designs', (req, res) => {
+app.post('/api/designs', async (req, res) => {
     try {
         const { designId, title, description, authorName, level, saveData, thumbnail } = req.body;
 
@@ -91,13 +126,17 @@ app.post('/api/designs', (req, res) => {
             return res.status(500).json({ error: 'Failed to save design file' });
         }
 
-        // Save thumbnail if provided (always overwrite)
+        // Save and compress thumbnail if provided (always overwrite)
         let thumbnailUrl = null;
         if (thumbnail) {
             const thumbnailFilename = `${finalDesignId}.png`;
             const thumbnailPath = path.join(THUMBNAILS_DIR, thumbnailFilename);
-            if (saveBase64File(thumbnail, thumbnailPath)) {
-                thumbnailUrl = `/api/thumbnails/${thumbnailFilename}`;
+            
+            // Use compression for new thumbnails
+            const savedThumbnailPath = await compressAndSaveThumbnail(thumbnail, thumbnailPath);
+            if (savedThumbnailPath) {
+                const savedFilename = path.basename(savedThumbnailPath);
+                thumbnailUrl = `/api/thumbnails/${savedFilename}`;
             }
         }
 
