@@ -3,7 +3,14 @@ const cors = require('cors');
 const fs = require('fs-extra');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const sharp = require('sharp');
+// Try to load Sharp, fallback if not available
+let sharp;
+try {
+    sharp = require('sharp');
+    console.log('Sharp image compression enabled');
+} catch (error) {
+    console.warn('Sharp not available, image compression disabled:', error.message);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -70,6 +77,12 @@ function saveBase64File(base64Data, filename) {
 }
 
 async function compressAndSaveThumbnail(base64Data, filename) {
+    // Fallback to original save if Sharp is not available
+    if (!sharp) {
+        console.log('Sharp not available, saving original thumbnail');
+        return saveBase64File(base64Data, filename) ? filename : null;
+    }
+    
     try {
         const buffer = Buffer.from(base64Data, 'base64');
         
