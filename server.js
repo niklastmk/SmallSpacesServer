@@ -39,12 +39,24 @@ const THUMBNAILS_DIR = path.join(STORAGE_DIR, 'thumbnails');
 const METADATA_FILE = path.join(STORAGE_DIR, 'metadata.json');
 
 // Ensure storage directories exist
-fs.ensureDirSync(DESIGNS_DIR);
-fs.ensureDirSync(THUMBNAILS_DIR);
+try {
+    fs.ensureDirSync(DESIGNS_DIR);
+    fs.ensureDirSync(THUMBNAILS_DIR);
+    console.log('Storage directories created/verified');
+} catch (error) {
+    console.error('Failed to create storage directories:', error);
+    process.exit(1);
+}
 
 // Initialize metadata file if it doesn't exist
-if (!fs.existsSync(METADATA_FILE)) {
-    fs.writeJsonSync(METADATA_FILE, []);
+try {
+    if (!fs.existsSync(METADATA_FILE)) {
+        fs.writeJsonSync(METADATA_FILE, []);
+        console.log('Metadata file initialized');
+    }
+} catch (error) {
+    console.error('Failed to initialize metadata file:', error);
+    process.exit(1);
 }
 
 // Helper functions
@@ -495,13 +507,27 @@ app.delete('/api/reset', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-    console.log(`Small Spaces Design Server running on http://localhost:${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Small Spaces Design Server running on port ${PORT}`);
     console.log(`Storage directory: ${STORAGE_DIR}`);
     console.log(`Persistent storage: ${process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'ENABLED' : 'LOCAL'}`);
-    console.log(`API endpoints:`);
-    console.log(`  POST /api/designs - Upload design`);
-    console.log(`  GET /api/designs - Browse designs`);
-    console.log(`  POST /api/designs/:id/download - Download design`);
-    console.log(`  GET /api/thumbnails/:filename - Get thumbnail`);
+    console.log(`Sharp compression: ${sharp ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Server ready for connections`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('Received SIGTERM, shutting down gracefully');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('Received SIGINT, shutting down gracefully');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
 });
