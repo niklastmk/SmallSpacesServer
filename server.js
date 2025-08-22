@@ -98,12 +98,8 @@ async function compressAndSaveThumbnail(base64Data, filename) {
     try {
         const buffer = Buffer.from(base64Data, 'base64');
         
-        // Compress and resize: 400px width, 80% quality JPEG
+        // Compress only (keep original resolution): 80% quality JPEG
         const compressedBuffer = await sharp(buffer)
-            .resize(400, null, { 
-                withoutEnlargement: true,
-                fit: 'inside'
-            })
             .jpeg({ 
                 quality: 80,
                 progressive: true 
@@ -546,12 +542,8 @@ app.post('/api/admin/compress-inplace', async (req, res) => {
                 // Create backup
                 fs.copyFileSync(originalPath, backupPath);
                 
-                // Compress to JPEG but keep .png filename
+                // Compress to JPEG but keep .png filename (no resize)
                 const compressedBuffer = await sharp(originalBuffer)
-                    .resize(400, null, { 
-                        withoutEnlargement: true,
-                        fit: 'inside'
-                    })
                     .jpeg({ 
                         quality: 80,
                         progressive: true 
