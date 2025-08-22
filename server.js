@@ -343,6 +343,52 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'OK', message: 'Small Spaces Design Server is running' });
 });
 
+// Test image compression endpoint (development only)
+app.post('/api/test/compress', async (req, res) => {
+    try {
+        const { imageData } = req.body;
+        
+        if (!imageData) {
+            return res.status(400).json({ error: 'imageData (base64) required' });
+        }
+        
+        const testFilename = 'test-compression.png';
+        const testPath = path.join(THUMBNAILS_DIR, testFilename);
+        
+        // Test compression
+        const compressedPath = await compressAndSaveThumbnail(imageData, testPath);
+        
+        if (compressedPath) {
+            const originalSize = Buffer.from(imageData, 'base64').length;
+            const compressedSize = fs.statSync(compressedPath).size;
+            const savings = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
+            
+            // Clean up test file
+            fs.removeSync(compressedPath);
+            
+            res.json({
+                success: true,
+                compression: {
+                    originalSize: `${(originalSize/1024).toFixed(1)}KB`,
+                    compressedSize: `${(compressedSize/1024).toFixed(1)}KB`,
+                    savings: `${savings}%`,
+                    sharpAvailable: !!sharp
+                }
+            });
+        } else {
+            res.json({
+                success: false,
+                message: 'Compression failed',
+                sharpAvailable: !!sharp
+            });
+        }
+        
+    } catch (error) {
+        console.error('Test compression error:', error);
+        res.status(500).json({ error: 'Test failed', message: error.message });
+    }
+});
+
 // Delete specific design by ID
 app.delete('/api/designs/:id', (req, res) => {
     try {
