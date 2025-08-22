@@ -401,6 +401,146 @@ app.post('/api/test/compress', async (req, res) => {
     }
 });
 
+// Bulk compress existing thumbnails with backup
+app.post('/api/admin/compress-existing', async (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+    
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+    
+    if (!sharp) {
+        return res.status(500).json({ error: 'Sharp not available for compression' });
+    }
+    
+    try {
+        // Create backup directory
+        const BACKUP_DIR = path.join(STORAGE_DIR, 'thumbnails-backup');
+        fs.ensureDirSync(BACKUP_DIR);
+        
+        // Get all existing thumbnails
+        const thumbnailFiles = fs.readdirSync(THUMBNAILS_DIR)
+            .filter(file => file.endsWith('.png') || file.endsWith('.jpg') || file.endsWith('.jpeg'));
+        
+        let compressed = 0;
+        let skipped = 0;
+        let errors = 0;
+        let totalOriginalSize = 0;
+        let totalCompressedSize = 0;
+        
+        console.log(`Starting bulk compression of ${thumbnailFiles.length} thumbnails...`);
+        
+        for (const filename of thumbnailFiles) {
+            try {
+                const originalPath = path.join(THUMBNAILS_DIR, filename);
+                const backupPath = path.join(BACKUP_DIR, filename);
+                const originalSize = fs.statSync(originalPath).size;
+                
+                // Skip if already JPEG and small
+                if ((filename.endsWith('.jpg') || filename.endsWith('.jpeg')) && originalSize < 200 * 1024) {
+                    skipped++;
+                    continue;
+                }
+                
+                // Create backup
+                fs.copyFileSync(originalPath, backupPath);
+                
+                // Read original file and convert to base64
+                const fileBuffer = fs.readFileSync(originalPath);
+                const base64Data = fileBuffer.toString('base64');
+                
+                // Compress
+                const compressedPath = await compressAndSaveThumbnail(base64Data, originalPath);
+                
+                if (compressedPath) {
+                    const compressedSize = fs.statSync(compressedPath).size;
+                    totalOriginalSize += originalSize;
+                    totalCompressedSize += compressedSize;
+                    compressed++;
+                    
+                    const savings = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
+                    console.log(`Compressed ${filename}: ${(originalSize/1024).toFixed(0)}KB → ${(compressedSize/1024).toFixed(0)}KB (${savings}% savings)`);
+                } else {
+                    // Restore from backup if compression failed
+                    fs.copyFileSync(backupPath, originalPath);
+                    errors++;
+                    console.error(`Failed to compress ${filename}, restored from backup`);
+                }
+                
+            } catch (error) {
+                errors++;
+                console.error(`Error processing ${filename}:`, error.message);
+            }
+        }
+        
+        const totalSavings = totalOriginalSize > 0 
+            ? ((totalOriginalSize - totalCompressedSize) / totalOriginalSize * 100).toFixed(1)
+            : '0';
+        
+        console.log(`Bulk compression complete: ${compressed} compressed, ${skipped} skipped, ${errors} errors`);
+        
+        res.json({
+            success: true,
+            results: {
+                total: thumbnailFiles.length,
+                compressed: compressed,
+                skipped: skipped,
+                errors: errors,
+                totalSavings: `${totalSavings}%`,
+                originalSize: `${(totalOriginalSize/1024/1024).toFixed(1)}MB`,
+                compressedSize: `${(totalCompressedSize/1024/1024).toFixed(1)}MB`,
+                backupLocation: BACKUP_DIR
+            }
+        });
+        
+    } catch (error) {
+        console.error('Bulk compression error:', error);
+        res.status(500).json({ error: 'Bulk compression failed', message: error.message });
+    }
+});
+
+// Restore from backup
+app.post('/api/admin/restore-backup', async (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+    
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+    
+    try {
+        const BACKUP_DIR = path.join(STORAGE_DIR, 'thumbnails-backup');
+        
+        if (!fs.existsSync(BACKUP_DIR)) {
+            return res.status(404).json({ error: 'No backup found' });
+        }
+        
+        const backupFiles = fs.readdirSync(BACKUP_DIR);
+        let restored = 0;
+        
+        for (const filename of backupFiles) {
+            const backupPath = path.join(BACKUP_DIR, filename);
+            const originalPath = path.join(THUMBNAILS_DIR, filename);
+            
+            fs.copyFileSync(backupPath, originalPath);
+            restored++;
+        }
+        
+        console.log(`Restored ${restored} files from backup`);
+        
+        res.json({
+            success: true,
+            message: `Restored ${restored} thumbnails from backup`,
+            restored: restored
+        });
+        
+    } catch (error) {
+        console.error('Restore backup error:', error);
+        res.status(500).json({ error: 'Restore failed', message: error.message });
+    }
+});
+
 // Delete specific design by ID
 app.delete('/api/designs/:id', (req, res) => {
     try {
