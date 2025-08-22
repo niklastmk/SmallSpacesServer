@@ -500,6 +500,114 @@ app.post('/api/admin/compress-existing', async (req, res) => {
     }
 });
 
+// Compress existing thumbnails IN-PLACE (keeps PNG extensions)
+app.post('/api/admin/compress-inplace', async (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+    
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+    
+    if (!sharp) {
+        return res.status(500).json({ error: 'Sharp not available for compression' });
+    }
+    
+    try {
+        // Create backup directory
+        const BACKUP_DIR = path.join(STORAGE_DIR, 'thumbnails-backup-inplace');
+        fs.ensureDirSync(BACKUP_DIR);
+        
+        // Get all PNG thumbnails
+        const thumbnailFiles = fs.readdirSync(THUMBNAILS_DIR)
+            .filter(file => file.endsWith('.png'));
+        
+        let compressed = 0;
+        let skipped = 0;
+        let errors = 0;
+        let totalOriginalSize = 0;
+        let totalCompressedSize = 0;
+        
+        console.log(`Starting in-place compression of ${thumbnailFiles.length} PNG thumbnails...`);
+        
+        for (const filename of thumbnailFiles) {
+            try {
+                const originalPath = path.join(THUMBNAILS_DIR, filename);
+                const backupPath = path.join(BACKUP_DIR, filename);
+                const originalBuffer = fs.readFileSync(originalPath);
+                const originalSize = originalBuffer.length;
+                
+                // Skip if already small (likely already compressed)
+                if (originalSize < 100 * 1024) {
+                    skipped++;
+                    continue;
+                }
+                
+                // Create backup
+                fs.copyFileSync(originalPath, backupPath);
+                
+                // Compress to JPEG but keep .png filename
+                const compressedBuffer = await sharp(originalBuffer)
+                    .resize(400, null, { 
+                        withoutEnlargement: true,
+                        fit: 'inside'
+                    })
+                    .jpeg({ 
+                        quality: 80,
+                        progressive: true 
+                    })
+                    .toBuffer();
+                
+                // Replace original file with compressed content (SAME filename)
+                fs.writeFileSync(originalPath, compressedBuffer);
+                
+                const compressedSize = compressedBuffer.length;
+                totalOriginalSize += originalSize;
+                totalCompressedSize += compressedSize;
+                compressed++;
+                
+                const savings = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
+                console.log(`Compressed ${filename}: ${(originalSize/1024).toFixed(0)}KB → ${(compressedSize/1024).toFixed(0)}KB (${savings}% savings)`);
+                
+            } catch (error) {
+                errors++;
+                console.error(`Error processing ${filename}:`, error.message);
+                
+                // Restore from backup if compression failed
+                const backupPath = path.join(BACKUP_DIR, filename);
+                if (fs.existsSync(backupPath)) {
+                    fs.copyFileSync(backupPath, path.join(THUMBNAILS_DIR, filename));
+                }
+            }
+        }
+        
+        const totalSavings = totalOriginalSize > 0 
+            ? ((totalOriginalSize - totalCompressedSize) / totalOriginalSize * 100).toFixed(1)
+            : '0';
+        
+        console.log(`In-place compression complete: ${compressed} compressed, ${skipped} skipped, ${errors} errors`);
+        
+        res.json({
+            success: true,
+            results: {
+                total: thumbnailFiles.length,
+                compressed: compressed,
+                skipped: skipped,
+                errors: errors,
+                totalSavings: `${totalSavings}%`,
+                originalSize: `${(totalOriginalSize/1024/1024).toFixed(1)}MB`,
+                compressedSize: `${(totalCompressedSize/1024/1024).toFixed(1)}MB`,
+                backupLocation: BACKUP_DIR,
+                note: "Files compressed in-place, keeping .png extensions for game compatibility"
+            }
+        });
+        
+    } catch (error) {
+        console.error('In-place compression error:', error);
+        res.status(500).json({ error: 'In-place compression failed', message: error.message });
+    }
+});
+
 // Restore from backup
 app.post('/api/admin/restore-backup', async (req, res) => {
     const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
