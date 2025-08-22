@@ -106,9 +106,8 @@ async function compressAndSaveThumbnail(base64Data, filename) {
             })
             .toBuffer();
         
-        // Change extension to .jpg for compressed files
-        const jpegFilename = filename.replace(/\.png$/i, '.jpg');
-        fs.writeFileSync(jpegFilename, compressedBuffer);
+        // Keep .png extension for game compatibility (JPEG data in PNG file)
+        fs.writeFileSync(filename, compressedBuffer);
         
         const originalSize = buffer.length;
         const compressedSize = compressedBuffer.length;
@@ -116,7 +115,7 @@ async function compressAndSaveThumbnail(base64Data, filename) {
         
         console.log(`Thumbnail compressed: ${(originalSize/1024/1024).toFixed(1)}MB → ${(compressedSize/1024).toFixed(0)}KB (${savings}% savings)`);
         
-        return jpegFilename;
+        return filename;
     } catch (error) {
         console.error('Error compressing thumbnail:', error);
         // Fallback to original save
