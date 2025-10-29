@@ -213,11 +213,27 @@ app.post('/api/designs', async (req, res) => {
 // Browse designs
 app.get('/api/designs', (req, res) => {
     try {
-        const allMetadata = loadMetadata();
-        
+        let allMetadata = loadMetadata();
+
         // Get sort parameter (default to date sorting for backward compatibility)
         const sortMode = req.query.sort || 'date';
-        
+
+        // Get search query parameter
+        const searchQuery = req.query.search;
+
+        // DEBUG: Log the actual query parameters received
+        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", searchType=${typeof searchQuery}, isEmpty=${!searchQuery || searchQuery.trim() === ''}`);
+
+        // Filter by search query if provided
+        if (searchQuery && searchQuery.trim() !== '') {
+            const searchLower = searchQuery.toLowerCase().trim();
+            allMetadata = allMetadata.filter(design => {
+                const titleMatch = design.title.toLowerCase().includes(searchLower);
+                const authorMatch = design.author_name.toLowerCase().includes(searchLower);
+                return titleMatch || authorMatch;
+            });
+        }
+
         // Sort based on the specified mode
         if (sortMode === 'downloads') {
             // Sort by download count (highest first), then by upload date (newest first)
@@ -231,10 +247,13 @@ app.get('/api/designs', (req, res) => {
             // Default: Sort by upload date (newest first)
             allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
         }
-        
-        // ALWAYS return ALL designs - no pagination
-        console.log(`Browse request: returning ALL designs (${allMetadata.length}), sort=${sortMode}`);
-        
+
+        // ALWAYS return ALL designs (filtered if search query provided) - no pagination
+        const logMessage = searchQuery
+            ? `Browse request: returning ${allMetadata.length} designs matching "${searchQuery}", sort=${sortMode}`
+            : `Browse request: returning ALL designs (${allMetadata.length}), sort=${sortMode}`;
+        console.log(logMessage);
+
         res.json({
             designs: allMetadata,
             total: allMetadata.length
@@ -337,7 +356,7 @@ app.get('/', (req, res) => {
         message: 'Small Spaces Design Server is running',
         endpoints: [
             'POST /api/designs - Upload design',
-            'GET /api/designs - Browse designs',
+            'GET /api/designs?sort={date|downloads}&search={query} - Browse designs',
             'POST /api/designs/:id/download - Download design',
             'DELETE /api/designs/:id - Delete design by ID',
             'POST /api/admin/repair-censored - Repair censored text (requires admin key)',
