@@ -221,8 +221,11 @@ app.get('/api/designs', (req, res) => {
         // Get search query parameter
         const searchQuery = req.query.search;
 
+        // Get level filter parameter
+        const levelFilter = req.query.level;
+
         // DEBUG: Log the actual query parameters received
-        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", searchType=${typeof searchQuery}, isEmpty=${!searchQuery || searchQuery.trim() === ''}`);
+        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", level="${levelFilter}"`);
 
         // Filter by search query if provided
         if (searchQuery && searchQuery.trim() !== '') {
@@ -231,6 +234,14 @@ app.get('/api/designs', (req, res) => {
                 const titleMatch = design.title.toLowerCase().includes(searchLower);
                 const authorMatch = design.author_name.toLowerCase().includes(searchLower);
                 return titleMatch || authorMatch;
+            });
+        }
+
+        // Filter by level if provided (exact match or contains)
+        if (levelFilter && levelFilter.trim() !== '') {
+            allMetadata = allMetadata.filter(design => {
+                // Support both exact match and partial match (for flexibility)
+                return design.level && design.level.includes(levelFilter);
             });
         }
 
@@ -248,10 +259,11 @@ app.get('/api/designs', (req, res) => {
             allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
         }
 
-        // ALWAYS return ALL designs (filtered if search query provided) - no pagination
-        const logMessage = searchQuery
-            ? `Browse request: returning ${allMetadata.length} designs matching "${searchQuery}", sort=${sortMode}`
-            : `Browse request: returning ALL designs (${allMetadata.length}), sort=${sortMode}`;
+        // ALWAYS return ALL designs (filtered if search/level provided) - no pagination
+        let logMessage = `Browse request: returning ${allMetadata.length} designs`;
+        if (searchQuery) logMessage += `, search="${searchQuery}"`;
+        if (levelFilter) logMessage += `, level="${levelFilter}"`;
+        logMessage += `, sort=${sortMode}`;
         console.log(logMessage);
 
         res.json({
@@ -356,7 +368,7 @@ app.get('/', (req, res) => {
         message: 'Small Spaces Design Server is running',
         endpoints: [
             'POST /api/designs - Upload design',
-            'GET /api/designs?sort={date|downloads}&search={query} - Browse designs',
+            'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
             'POST /api/designs/:id/download - Download design',
             'DELETE /api/designs/:id - Delete design by ID',
             'POST /api/admin/repair-censored - Repair censored text (requires admin key)',
