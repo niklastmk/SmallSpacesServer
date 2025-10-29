@@ -333,13 +333,14 @@ app.get('/api/thumbnails/:filename', (req, res) => {
 
 // Root route for browser
 app.get('/', (req, res) => {
-    res.json({ 
+    res.json({
         message: 'Small Spaces Design Server is running',
         endpoints: [
             'POST /api/designs - Upload design',
-            'GET /api/designs - Browse designs', 
+            'GET /api/designs - Browse designs',
             'POST /api/designs/:id/download - Download design',
             'DELETE /api/designs/:id - Delete design by ID',
+            'POST /api/admin/repair-censored - Repair censored text (requires admin key)',
             'GET /api/health - Health check'
         ]
     });
@@ -675,6 +676,97 @@ app.delete('/api/designs/:id', (req, res) => {
     } catch (error) {
         console.error('Delete error:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Repair censored text in metadata (fix old profanity filter damage)
+app.post('/api/admin/repair-censored', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const allMetadata = loadMetadata();
+        let repairedCount = 0;
+        const repairs = [];
+
+        // Common word patterns that were incorrectly censored by the old filter
+        const repairPatterns = [
+            { pattern: /cl\*{3}y/gi, replacement: 'classy' },
+            { pattern: /cl\*{3}ic/gi, replacement: 'classic' },
+            { pattern: /cl\*{3}/gi, replacement: 'class' },
+            { pattern: /gl\*{3}/gi, replacement: 'glass' },
+            { pattern: /br\*{3}/gi, replacement: 'brass' },
+            { pattern: /gr\*{3}/gi, replacement: 'grass' },
+            { pattern: /m\*{3}/gi, replacement: 'mass' },
+            { pattern: /p\*{3}/gi, replacement: 'pass' },
+            { pattern: /b\*{3}/gi, replacement: 'bass' },
+            { pattern: /\*{3}\*{3}in/gi, replacement: 'assassin' },
+            { pattern: /\*{3}e\*{3}ment/gi, replacement: 'assessment' },
+            { pattern: /\*{3}ume/gi, replacement: 'assume' },
+            { pattern: /emb\*{3}y/gi, replacement: 'embassy' },
+            { pattern: /h\*{3}le/gi, replacement: 'hassle' },
+            { pattern: /ti\*{3}ue/gi, replacement: 'tissue' },
+            { pattern: /ca\*{3}ette/gi, replacement: 'cassette' },
+            { pattern: /ca\*{3}erole/gi, replacement: 'casserole' },
+            { pattern: /compa\*{3}/gi, replacement: 'compass' }
+        ];
+
+        // Process each design
+        for (let design of allMetadata) {
+            let titleChanged = false;
+            let authorChanged = false;
+            const originalTitle = design.title;
+            const originalAuthor = design.author_name;
+
+            // Repair title
+            for (const { pattern, replacement } of repairPatterns) {
+                if (pattern.test(design.title)) {
+                    design.title = design.title.replace(pattern, replacement);
+                    titleChanged = true;
+                }
+            }
+
+            // Repair author name
+            for (const { pattern, replacement } of repairPatterns) {
+                if (pattern.test(design.author_name)) {
+                    design.author_name = design.author_name.replace(pattern, replacement);
+                    authorChanged = true;
+                }
+            }
+
+            // Track repairs
+            if (titleChanged || authorChanged) {
+                repairedCount++;
+                repairs.push({
+                    id: design.id,
+                    originalTitle: originalTitle,
+                    newTitle: design.title,
+                    originalAuthor: originalAuthor,
+                    newAuthor: design.author_name
+                });
+            }
+        }
+
+        // Save repaired metadata
+        if (repairedCount > 0) {
+            saveMetadata(allMetadata);
+            console.log(`Repaired ${repairedCount} designs with censored text`);
+        }
+
+        res.json({
+            success: true,
+            message: `Repaired ${repairedCount} designs`,
+            repaired: repairedCount,
+            repairs: repairs
+        });
+
+    } catch (error) {
+        console.error('Repair error:', error);
+        res.status(500).json({ error: 'Repair failed', message: error.message });
     }
 });
 
