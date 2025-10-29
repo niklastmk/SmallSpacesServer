@@ -679,6 +679,57 @@ app.delete('/api/designs/:id', (req, res) => {
     }
 });
 
+// Manually update specific design title/author
+app.post('/api/admin/update-design-text', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const { designId, title, authorName } = req.body;
+
+        if (!designId) {
+            return res.status(400).json({ error: 'designId is required' });
+        }
+
+        const allMetadata = loadMetadata();
+        const designIndex = allMetadata.findIndex(d => d.id === designId);
+
+        if (designIndex === -1) {
+            return res.status(404).json({ error: 'Design not found' });
+        }
+
+        const oldTitle = allMetadata[designIndex].title;
+        const oldAuthor = allMetadata[designIndex].author_name;
+
+        // Update fields if provided
+        if (title !== undefined) {
+            allMetadata[designIndex].title = title;
+        }
+        if (authorName !== undefined) {
+            allMetadata[designIndex].author_name = authorName;
+        }
+
+        saveMetadata(allMetadata);
+
+        res.json({
+            success: true,
+            designId: designId,
+            changes: {
+                title: { old: oldTitle, new: allMetadata[designIndex].title },
+                author: { old: oldAuthor, new: allMetadata[designIndex].author_name }
+            }
+        });
+
+    } catch (error) {
+        console.error('Manual update error:', error);
+        res.status(500).json({ error: 'Update failed', message: error.message });
+    }
+});
+
 // Repair censored text in metadata (fix old profanity filter damage)
 app.post('/api/admin/repair-censored', (req, res) => {
     const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
@@ -695,6 +746,7 @@ app.post('/api/admin/repair-censored', (req, res) => {
 
         // Common word patterns that were incorrectly censored by the old filter
         const repairPatterns = [
+            // Common English words
             { pattern: /cl\*{3}y/gi, replacement: 'classy' },
             { pattern: /cl\*{3}ic/gi, replacement: 'classic' },
             { pattern: /cl\*{3}/gi, replacement: 'class' },
@@ -712,7 +764,10 @@ app.post('/api/admin/repair-censored', (req, res) => {
             { pattern: /ti\*{3}ue/gi, replacement: 'tissue' },
             { pattern: /ca\*{3}ette/gi, replacement: 'cassette' },
             { pattern: /ca\*{3}erole/gi, replacement: 'casserole' },
-            { pattern: /compa\*{3}/gi, replacement: 'compass' }
+            { pattern: /compa\*{3}/gi, replacement: 'compass' },
+
+            // Japanese names/words (likely Shitaya - place name)
+            { pattern: /shi\*{3}a/gi, replacement: 'shitaya' }
         ];
 
         // Process each design
