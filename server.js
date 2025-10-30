@@ -345,6 +345,42 @@ app.post('/api/designs/:id/download', (req, res) => {
     }
 });
 
+// Like/unlike design (increment/decrement download_count)
+app.post('/api/designs/:id/like', (req, res) => {
+    try {
+        const designId = req.params.id;
+        const { increment } = req.body; // 1 or -1
+
+        const allMetadata = loadMetadata();
+        const designIndex = allMetadata.findIndex(d => d.id === designId);
+
+        if (designIndex === -1) {
+            return res.status(404).json({ error: 'Design not found' });
+        }
+
+        // Update download_count (like counter)
+        allMetadata[designIndex].download_count += increment;
+
+        // Prevent negative counts
+        if (allMetadata[designIndex].download_count < 0) {
+            allMetadata[designIndex].download_count = 0;
+        }
+
+        saveMetadata(allMetadata);
+
+        console.log(`Design ${designId} like updated: ${increment > 0 ? '+1' : '-1'} (new count: ${allMetadata[designIndex].download_count})`);
+
+        res.json({
+            success: true,
+            download_count: allMetadata[designIndex].download_count
+        });
+
+    } catch (error) {
+        console.error('Like error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Serve thumbnails
 app.get('/api/thumbnails/:filename', (req, res) => {
     try {
@@ -370,6 +406,7 @@ app.get('/', (req, res) => {
             'POST /api/designs - Upload design',
             'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
             'POST /api/designs/:id/download - Download design',
+            'POST /api/designs/:id/like - Like/unlike design (increment: 1 or -1)',
             'DELETE /api/designs/:id - Delete design by ID',
             'POST /api/admin/repair-censored - Repair censored text (requires admin key)',
             'GET /api/health - Health check'
