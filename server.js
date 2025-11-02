@@ -320,11 +320,11 @@ app.post('/api/designs/:id/download', (req, res) => {
         // Increment download counter and get metadata
         const allMetadata = loadMetadata();
         const designIndex = allMetadata.findIndex(d => d.id === designId);
-        let thumbnailUrl = null;
-        
+        let designMetadata = null;
+
         if (designIndex !== -1) {
             allMetadata[designIndex].download_count += 1;
-            thumbnailUrl = allMetadata[designIndex].thumbnail_url;
+            designMetadata = allMetadata[designIndex];
             saveMetadata(allMetadata);
         }
 
@@ -333,15 +333,92 @@ app.post('/api/designs/:id/download', (req, res) => {
         const base64Data = Buffer.from(designData).toString('base64');
 
         console.log(`Design downloaded: ${designId}`);
-        res.json({
+
+        // Return complete metadata along with save data
+        const response = {
             saveData: base64Data,
-            design_id: designId,
-            thumbnail_url: thumbnailUrl
-        });
+            designId: designId,
+            id: designId // Include both for compatibility
+        };
+
+        // Add metadata if found
+        if (designMetadata) {
+            response.title = designMetadata.title;
+            response.description = designMetadata.description;
+            response.author_name = designMetadata.author_name;
+            response.level = designMetadata.level;
+            response.download_count = designMetadata.download_count;
+            response.upload_date = designMetadata.upload_date;
+            response.thumbnail_url = designMetadata.thumbnail_url;
+        }
+
+        res.json(response);
 
     } catch (error) {
         console.error('Download error:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get metadata for multiple designs by IDs (no save data download)
+app.post('/api/designs/metadata', (req, res) => {
+    try {
+        console.log('Received metadata request:', JSON.stringify(req.body));
+
+        const { ids } = req.body;
+
+        if (!ids) {
+            console.error('Missing ids field in request body');
+            return res.status(400).json({ error: 'Missing ids field in request body' });
+        }
+
+        if (!Array.isArray(ids)) {
+            console.error('ids field is not an array:', typeof ids);
+            return res.status(400).json({ error: 'ids field must be an array' });
+        }
+
+        if (ids.length === 0) {
+            console.log('Empty IDs array provided');
+            return res.status(400).json({ error: 'Empty IDs array' });
+        }
+
+        console.log(`Metadata request for ${ids.length} design(s): ${ids.join(', ')}`);
+
+        // Load all metadata
+        const allMetadata = loadMetadata();
+        console.log(`Total designs in database: ${allMetadata.length}`);
+
+        // Log first few IDs from database for debugging
+        if (allMetadata.length > 0) {
+            console.log(`Sample IDs from database: ${allMetadata.slice(0, 3).map(d => d.id).join(', ')}`);
+        }
+
+        // Filter to only the requested IDs
+        const requestedMetadata = allMetadata.filter(design => ids.includes(design.id));
+
+        console.log(`Found ${requestedMetadata.length} matching designs out of ${ids.length} requested`);
+
+        // Return metadata in same format as browse endpoint
+        const designs = requestedMetadata.map(design => ({
+            id: design.id,
+            designId: design.id,
+            title: design.title,
+            description: design.description,
+            author_name: design.author_name,
+            level: design.level,
+            download_count: design.download_count,
+            upload_date: design.upload_date,
+            thumbnail_url: design.thumbnail_url
+        }));
+
+        console.log(`Returning metadata for ${designs.length} design(s)`);
+
+        res.json({ designs });
+
+    } catch (error) {
+        console.error('Get metadata error:', error);
+        console.error('Error stack:', error.stack);
+        res.status(500).json({ error: 'Internal server error', details: error.message });
     }
 });
 
@@ -406,6 +483,7 @@ app.get('/', (req, res) => {
             'POST /api/designs - Upload design',
             'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
             'POST /api/designs/:id/download - Download design',
+            'POST /api/designs/metadata - Get metadata for multiple designs by IDs (body: {ids: []})',
             'POST /api/designs/:id/like - Like/unlike design (increment: 1 or -1)',
             'DELETE /api/designs/:id - Delete design by ID',
             'POST /api/admin/repair-censored - Repair censored text (requires admin key)',
