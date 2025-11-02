@@ -486,7 +486,9 @@ app.get('/', (req, res) => {
             'POST /api/designs/metadata - Get metadata for multiple designs by IDs (body: {ids: []})',
             'POST /api/designs/:id/like - Like/unlike design (increment: 1 or -1)',
             'DELETE /api/designs/:id - Delete design by ID',
-            'POST /api/admin/repair-censored - Repair censored text (requires admin key)',
+            'GET /api/admin/export-censored - Export censored entries for manual correction (requires admin key)',
+            'POST /api/admin/import-corrections - Import manual corrections (requires admin key)',
+            'POST /api/admin/repair-censored - Auto-repair censored text (requires admin key)',
             'GET /api/health - Health check'
         ]
     });
@@ -873,6 +875,141 @@ app.post('/api/admin/update-design-text', (req, res) => {
     } catch (error) {
         console.error('Manual update error:', error);
         res.status(500).json({ error: 'Update failed', message: error.message });
+    }
+});
+
+// Export all censored entries to a file for manual correction
+app.get('/api/admin/export-censored', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const allMetadata = loadMetadata();
+        const censoredEntries = [];
+
+        // Find all entries with asterisks in title or author name
+        for (const design of allMetadata) {
+            const hasAsterisksInTitle = design.title && design.title.includes('*');
+            const hasAsterisksInAuthor = design.author_name && design.author_name.includes('*');
+
+            if (hasAsterisksInTitle || hasAsterisksInAuthor) {
+                censoredEntries.push({
+                    id: design.id,
+                    title: design.title,
+                    author_name: design.author_name,
+                    // These will be filled in manually by the user
+                    corrected_title: hasAsterisksInTitle ? "" : design.title,
+                    corrected_author: hasAsterisksInAuthor ? "" : design.author_name,
+                    upload_date: design.upload_date,
+                    download_count: design.download_count
+                });
+            }
+        }
+
+        console.log(`Found ${censoredEntries.length} designs with censored text`);
+
+        res.json({
+            success: true,
+            total_censored: censoredEntries.length,
+            entries: censoredEntries,
+            instructions: "Fill in 'corrected_title' and 'corrected_author' fields, then POST to /api/admin/import-corrections"
+        });
+
+    } catch (error) {
+        console.error('Export error:', error);
+        res.status(500).json({ error: 'Export failed', message: error.message });
+    }
+});
+
+// Import manual corrections and apply them to the database
+app.post('/api/admin/import-corrections', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const { corrections } = req.body;
+
+        if (!corrections || !Array.isArray(corrections)) {
+            return res.status(400).json({ error: 'Missing or invalid corrections array' });
+        }
+
+        const allMetadata = loadMetadata();
+        let appliedCount = 0;
+        const results = [];
+
+        for (const correction of corrections) {
+            if (!correction.id) {
+                continue;
+            }
+
+            const designIndex = allMetadata.findIndex(d => d.id === correction.id);
+
+            if (designIndex === -1) {
+                results.push({
+                    id: correction.id,
+                    status: 'not_found',
+                    message: 'Design ID not found in database'
+                });
+                continue;
+            }
+
+            const design = allMetadata[designIndex];
+            let changed = false;
+
+            // Apply title correction if provided
+            if (correction.corrected_title && correction.corrected_title.trim() !== '') {
+                design.title = correction.corrected_title.trim();
+                changed = true;
+            }
+
+            // Apply author correction if provided
+            if (correction.corrected_author && correction.corrected_author.trim() !== '') {
+                design.author_name = correction.corrected_author.trim();
+                changed = true;
+            }
+
+            if (changed) {
+                appliedCount++;
+                results.push({
+                    id: correction.id,
+                    status: 'success',
+                    new_title: design.title,
+                    new_author: design.author_name
+                });
+            } else {
+                results.push({
+                    id: correction.id,
+                    status: 'skipped',
+                    message: 'No corrections provided'
+                });
+            }
+        }
+
+        // Save updated metadata
+        if (appliedCount > 0) {
+            saveMetadata(allMetadata);
+            console.log(`Applied ${appliedCount} manual corrections`);
+        }
+
+        res.json({
+            success: true,
+            message: `Applied ${appliedCount} corrections`,
+            total_processed: corrections.length,
+            applied: appliedCount,
+            results: results
+        });
+
+    } catch (error) {
+        console.error('Import error:', error);
+        res.status(500).json({ error: 'Import failed', message: error.message });
     }
 });
 
