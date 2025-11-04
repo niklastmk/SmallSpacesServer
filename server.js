@@ -360,6 +360,56 @@ app.post('/api/designs/:id/download', (req, res) => {
     }
 });
 
+// Binary download endpoint (no Base64 overhead) - MUCH faster for large saves
+app.post('/api/designs/:id/download/binary', (req, res) => {
+    try {
+        const designId = req.params.id;
+        const designPath = path.join(DESIGNS_DIR, `${designId}.sav`);
+
+        if (!fs.existsSync(designPath)) {
+            return res.status(404).json({ error: 'Design not found' });
+        }
+
+        // Increment download counter and get metadata
+        const allMetadata = loadMetadata();
+        const designIndex = allMetadata.findIndex(d => d.id === designId);
+        let designMetadata = null;
+
+        if (designIndex !== -1) {
+            allMetadata[designIndex].download_count += 1;
+            designMetadata = allMetadata[designIndex];
+            saveMetadata(allMetadata);
+        }
+
+        // Send metadata as JSON header
+        if (designMetadata) {
+            res.setHeader('X-Design-Metadata', JSON.stringify({
+                designId: designId,
+                id: designId,
+                title: designMetadata.title,
+                description: designMetadata.description,
+                author_name: designMetadata.author_name,
+                level: designMetadata.level,
+                download_count: designMetadata.download_count,
+                upload_date: designMetadata.upload_date,
+                thumbnail_url: designMetadata.thumbnail_url
+            }));
+        }
+
+        // Send binary file directly (no Base64 conversion)
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Length', fs.statSync(designPath).size);
+
+        console.log(`Design downloaded (binary): ${designId} (${(fs.statSync(designPath).size / 1024).toFixed(0)}KB)`);
+
+        res.sendFile(designPath);
+
+    } catch (error) {
+        console.error('Binary download error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Get metadata for multiple designs by IDs (no save data download)
 app.post('/api/designs/metadata', (req, res) => {
     try {
@@ -482,7 +532,8 @@ app.get('/', (req, res) => {
         endpoints: [
             'POST /api/designs - Upload design',
             'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
-            'POST /api/designs/:id/download - Download design',
+            'POST /api/designs/:id/download - Download design (Base64)',
+            'POST /api/designs/:id/download/binary - Download design (Binary - FAST, no Base64 overhead)',
             'POST /api/designs/metadata - Get metadata for multiple designs by IDs (body: {ids: []})',
             'POST /api/designs/:id/like - Like/unlike design (increment: 1 or -1)',
             'DELETE /api/designs/:id - Delete design by ID',
