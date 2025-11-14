@@ -381,9 +381,9 @@ app.post('/api/designs/:id/download/binary', (req, res) => {
             saveMetadata(allMetadata);
         }
 
-        // Send metadata as JSON header
+        // Send metadata as JSON header (Base64-encoded for non-Latin character support)
         if (designMetadata) {
-            res.setHeader('X-Design-Metadata', JSON.stringify({
+            const metadataJson = JSON.stringify({
                 designId: designId,
                 id: designId,
                 title: designMetadata.title,
@@ -393,7 +393,10 @@ app.post('/api/designs/:id/download/binary', (req, res) => {
                 download_count: designMetadata.download_count,
                 upload_date: designMetadata.upload_date,
                 thumbnail_url: designMetadata.thumbnail_url
-            }));
+            });
+            // Base64 encode to support Chinese, Japanese, Korean, and other non-ASCII characters
+            const metadataBase64 = Buffer.from(metadataJson, 'utf8').toString('base64');
+            res.setHeader('X-Design-Metadata', metadataBase64);
         }
 
         // Send binary file directly (no Base64 conversion)
