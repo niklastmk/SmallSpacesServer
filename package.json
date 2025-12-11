@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "build": "echo 'No build step required'"
+    "build": "cd dashboard && npm install && npm run build",
+    "build:dashboard": "cd dashboard && npm install && npm run build"
   },
   "engines": {
     "node": ">=18.0.0",

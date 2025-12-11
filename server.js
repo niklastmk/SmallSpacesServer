@@ -32,16 +32,33 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // Large limit for save data + thumbnails
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Serve analytics dashboard static files (if built)
+const DASHBOARD_DIR = path.join(__dirname, 'dashboard', 'dist');
+if (fs.existsSync(DASHBOARD_DIR)) {
+    app.use('/admin', express.static(DASHBOARD_DIR));
+    // Handle SPA routing - serve index.html for all /admin routes
+    app.get('/admin/*', (req, res) => {
+        res.sendFile(path.join(DASHBOARD_DIR, 'index.html'));
+    });
+    console.log('Analytics dashboard enabled at /admin');
+}
+
 // Storage directories - use persistent volume on Railway Pro
 const STORAGE_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(__dirname, 'storage');
 const DESIGNS_DIR = path.join(STORAGE_DIR, 'designs');
 const THUMBNAILS_DIR = path.join(STORAGE_DIR, 'thumbnails');
 const METADATA_FILE = path.join(STORAGE_DIR, 'metadata.json');
 
+// Analytics storage directories
+const ANALYTICS_DIR = path.join(STORAGE_DIR, 'analytics');
+const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, 'events.json');
+const ANALYTICS_SESSIONS_FILE = path.join(ANALYTICS_DIR, 'sessions.json');
+
 // Ensure storage directories exist
 try {
     fs.ensureDirSync(DESIGNS_DIR);
     fs.ensureDirSync(THUMBNAILS_DIR);
+    fs.ensureDirSync(ANALYTICS_DIR);
     console.log('Storage directories created/verified');
 } catch (error) {
     console.error('Failed to create storage directories:', error);
@@ -57,6 +74,21 @@ try {
 } catch (error) {
     console.error('Failed to initialize metadata file:', error);
     process.exit(1);
+}
+
+// Initialize analytics files if they don't exist
+try {
+    if (!fs.existsSync(ANALYTICS_EVENTS_FILE)) {
+        fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
+        console.log('Analytics events file initialized');
+    }
+    if (!fs.existsSync(ANALYTICS_SESSIONS_FILE)) {
+        fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
+        console.log('Analytics sessions file initialized');
+    }
+} catch (error) {
+    console.error('Failed to initialize analytics files:', error);
+    // Non-fatal - analytics is optional
 }
 
 // Helper functions
@@ -85,6 +117,41 @@ function saveBase64File(base64Data, filename) {
     } catch (error) {
         console.error('Error saving file:', error);
         return false;
+    }
+}
+
+// Analytics helper functions
+function loadAnalyticsEvents() {
+    try {
+        return fs.readJsonSync(ANALYTICS_EVENTS_FILE);
+    } catch (error) {
+        console.error('Error loading analytics events:', error);
+        return [];
+    }
+}
+
+function saveAnalyticsEvents(events) {
+    try {
+        fs.writeJsonSync(ANALYTICS_EVENTS_FILE, events, { spaces: 2 });
+    } catch (error) {
+        console.error('Error saving analytics events:', error);
+    }
+}
+
+function loadAnalyticsSessions() {
+    try {
+        return fs.readJsonSync(ANALYTICS_SESSIONS_FILE);
+    } catch (error) {
+        console.error('Error loading analytics sessions:', error);
+        return [];
+    }
+}
+
+function saveAnalyticsSessions(sessions) {
+    try {
+        fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, sessions, { spaces: 2 });
+    } catch (error) {
+        console.error('Error saving analytics sessions:', error);
     }
 }
 
@@ -532,19 +599,34 @@ app.get('/api/thumbnails/:filename', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'Small Spaces Design Server is running',
-        endpoints: [
-            'POST /api/designs - Upload design',
-            'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
-            'POST /api/designs/:id/download - Download design (Base64)',
-            'POST /api/designs/:id/download/binary - Download design (Binary - FAST, no Base64 overhead)',
-            'POST /api/designs/metadata - Get metadata for multiple designs by IDs (body: {ids: []})',
-            'POST /api/designs/:id/like - Like/unlike design (increment: 1 or -1)',
-            'DELETE /api/designs/:id - Delete design by ID',
-            'GET /api/admin/export-censored - Export censored entries for manual correction (requires admin key)',
-            'POST /api/admin/import-corrections - Import manual corrections (requires admin key)',
-            'POST /api/admin/repair-censored - Auto-repair censored text (requires admin key)',
-            'GET /api/health - Health check'
-        ]
+        endpoints: {
+            designs: [
+                'POST /api/designs - Upload design',
+                'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
+                'POST /api/designs/:id/download - Download design (Base64)',
+                'POST /api/designs/:id/download/binary - Download design (Binary - FAST)',
+                'POST /api/designs/metadata - Get metadata for multiple designs by IDs',
+                'POST /api/designs/:id/like - Like/unlike design',
+                'DELETE /api/designs/:id - Delete design by ID'
+            ],
+            analytics: [
+                'POST /api/analytics/event - Track single event',
+                'POST /api/analytics/batch - Track multiple events',
+                'POST /api/analytics/session/start - Start session',
+                'POST /api/analytics/session/end - End session',
+                'GET /api/analytics/events - Query events (admin)',
+                'GET /api/analytics/sessions - List sessions (admin)',
+                'GET /api/analytics/summary - Dashboard summary (admin)',
+                'GET /api/analytics/event-names - Unique event names (admin)',
+                'DELETE /api/analytics/clear - Clear analytics data (admin)'
+            ],
+            admin: [
+                'GET /api/admin/export-censored - Export censored entries',
+                'POST /api/admin/import-corrections - Import corrections',
+                'POST /api/admin/repair-censored - Auto-repair censored text',
+                'GET /api/health - Health check'
+            ]
+        }
     });
 });
 
@@ -1161,6 +1243,356 @@ app.post('/api/admin/repair-censored', (req, res) => {
         res.status(500).json({ error: 'Repair failed', message: error.message });
     }
 });
+
+// ============================================
+// ANALYTICS API ENDPOINTS
+// ============================================
+
+// Track a single analytics event (no auth required - game clients send these)
+app.post('/api/analytics/event', (req, res) => {
+    try {
+        const { session_id, event_name, properties, client_version, platform } = req.body;
+
+        if (!event_name) {
+            return res.status(400).json({ error: 'event_name is required' });
+        }
+
+        const event = {
+            id: uuidv4(),
+            session_id: session_id || 'anonymous',
+            event_name: event_name,
+            properties: properties || {},
+            timestamp: new Date().toISOString(),
+            client_version: client_version || 'unknown',
+            platform: platform || 'unknown'
+        };
+
+        const events = loadAnalyticsEvents();
+        events.push(event);
+        saveAnalyticsEvents(events);
+
+        console.log(`Analytics event: ${event_name} (session: ${session_id || 'anonymous'})`);
+
+        res.json({ success: true, event_id: event.id });
+
+    } catch (error) {
+        console.error('Analytics event error:', error);
+        res.status(500).json({ error: 'Failed to track event' });
+    }
+});
+
+// Track multiple events in a batch (no auth required)
+app.post('/api/analytics/batch', (req, res) => {
+    try {
+        const { events: batchEvents, session_id, client_version, platform } = req.body;
+
+        if (!batchEvents || !Array.isArray(batchEvents)) {
+            return res.status(400).json({ error: 'events array is required' });
+        }
+
+        const events = loadAnalyticsEvents();
+        const processedEvents = [];
+
+        for (const eventData of batchEvents) {
+            const event = {
+                id: uuidv4(),
+                session_id: eventData.session_id || session_id || 'anonymous',
+                event_name: eventData.event_name,
+                properties: eventData.properties || {},
+                timestamp: eventData.timestamp || new Date().toISOString(),
+                client_version: eventData.client_version || client_version || 'unknown',
+                platform: eventData.platform || platform || 'unknown'
+            };
+            events.push(event);
+            processedEvents.push(event.id);
+        }
+
+        saveAnalyticsEvents(events);
+
+        console.log(`Analytics batch: ${processedEvents.length} events (session: ${session_id || 'anonymous'})`);
+
+        res.json({ success: true, event_ids: processedEvents, count: processedEvents.length });
+
+    } catch (error) {
+        console.error('Analytics batch error:', error);
+        res.status(500).json({ error: 'Failed to track batch' });
+    }
+});
+
+// Start a new session (no auth required)
+app.post('/api/analytics/session/start', (req, res) => {
+    try {
+        const { client_version, platform, metadata } = req.body;
+
+        const session = {
+            id: uuidv4(),
+            start_time: new Date().toISOString(),
+            end_time: null,
+            client_version: client_version || 'unknown',
+            platform: platform || 'unknown',
+            metadata: metadata || {},
+            event_count: 0
+        };
+
+        const sessions = loadAnalyticsSessions();
+        sessions.push(session);
+        saveAnalyticsSessions(sessions);
+
+        console.log(`Analytics session started: ${session.id}`);
+
+        res.json({ success: true, session_id: session.id });
+
+    } catch (error) {
+        console.error('Session start error:', error);
+        res.status(500).json({ error: 'Failed to start session' });
+    }
+});
+
+// End a session (no auth required)
+app.post('/api/analytics/session/end', (req, res) => {
+    try {
+        const { session_id } = req.body;
+
+        if (!session_id) {
+            return res.status(400).json({ error: 'session_id is required' });
+        }
+
+        const sessions = loadAnalyticsSessions();
+        const sessionIndex = sessions.findIndex(s => s.id === session_id);
+
+        if (sessionIndex === -1) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        sessions[sessionIndex].end_time = new Date().toISOString();
+
+        // Count events for this session
+        const events = loadAnalyticsEvents();
+        sessions[sessionIndex].event_count = events.filter(e => e.session_id === session_id).length;
+
+        saveAnalyticsSessions(sessions);
+
+        console.log(`Analytics session ended: ${session_id}`);
+
+        res.json({ success: true, session: sessions[sessionIndex] });
+
+    } catch (error) {
+        console.error('Session end error:', error);
+        res.status(500).json({ error: 'Failed to end session' });
+    }
+});
+
+// Query events (admin auth required)
+app.get('/api/analytics/events', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        let events = loadAnalyticsEvents();
+
+        // Filter by event name
+        if (req.query.event_name) {
+            events = events.filter(e => e.event_name === req.query.event_name);
+        }
+
+        // Filter by session
+        if (req.query.session_id) {
+            events = events.filter(e => e.session_id === req.query.session_id);
+        }
+
+        // Filter by date range
+        if (req.query.start_date) {
+            const startDate = new Date(req.query.start_date);
+            events = events.filter(e => new Date(e.timestamp) >= startDate);
+        }
+        if (req.query.end_date) {
+            const endDate = new Date(req.query.end_date);
+            events = events.filter(e => new Date(e.timestamp) <= endDate);
+        }
+
+        // Sort by timestamp (newest first)
+        events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        // Pagination
+        const limit = parseInt(req.query.limit) || 100;
+        const offset = parseInt(req.query.offset) || 0;
+        const paginatedEvents = events.slice(offset, offset + limit);
+
+        res.json({
+            events: paginatedEvents,
+            total: events.length,
+            limit,
+            offset
+        });
+
+    } catch (error) {
+        console.error('Query events error:', error);
+        res.status(500).json({ error: 'Failed to query events' });
+    }
+});
+
+// Get sessions list (admin auth required)
+app.get('/api/analytics/sessions', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        let sessions = loadAnalyticsSessions();
+
+        // Sort by start time (newest first)
+        sessions.sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
+
+        // Pagination
+        const limit = parseInt(req.query.limit) || 50;
+        const offset = parseInt(req.query.offset) || 0;
+        const paginatedSessions = sessions.slice(offset, offset + limit);
+
+        res.json({
+            sessions: paginatedSessions,
+            total: sessions.length,
+            limit,
+            offset
+        });
+
+    } catch (error) {
+        console.error('Query sessions error:', error);
+        res.status(500).json({ error: 'Failed to query sessions' });
+    }
+});
+
+// Get dashboard summary (admin auth required)
+app.get('/api/analytics/summary', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const events = loadAnalyticsEvents();
+        const sessions = loadAnalyticsSessions();
+
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const weekStart = new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const monthStart = new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+        // Count events by time period
+        const eventsToday = events.filter(e => new Date(e.timestamp) >= todayStart).length;
+        const eventsThisWeek = events.filter(e => new Date(e.timestamp) >= weekStart).length;
+        const eventsThisMonth = events.filter(e => new Date(e.timestamp) >= monthStart).length;
+
+        // Count sessions by time period
+        const sessionsToday = sessions.filter(s => new Date(s.start_time) >= todayStart).length;
+        const sessionsThisWeek = sessions.filter(s => new Date(s.start_time) >= weekStart).length;
+
+        // Top events by frequency
+        const eventCounts = {};
+        for (const event of events) {
+            eventCounts[event.event_name] = (eventCounts[event.event_name] || 0) + 1;
+        }
+        const topEvents = Object.entries(eventCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([name, count]) => ({ name, count }));
+
+        // Events per day (last 7 days)
+        const eventsPerDay = [];
+        for (let i = 6; i >= 0; i--) {
+            const dayStart = new Date(todayStart.getTime() - i * 24 * 60 * 60 * 1000);
+            const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+            const count = events.filter(e => {
+                const t = new Date(e.timestamp);
+                return t >= dayStart && t < dayEnd;
+            }).length;
+            eventsPerDay.push({
+                date: dayStart.toISOString().split('T')[0],
+                count
+            });
+        }
+
+        // Active sessions (started but not ended)
+        const activeSessions = sessions.filter(s => !s.end_time).length;
+
+        res.json({
+            events: {
+                total: events.length,
+                today: eventsToday,
+                this_week: eventsThisWeek,
+                this_month: eventsThisMonth
+            },
+            sessions: {
+                total: sessions.length,
+                today: sessionsToday,
+                this_week: sessionsThisWeek,
+                active: activeSessions
+            },
+            top_events: topEvents,
+            events_per_day: eventsPerDay
+        });
+
+    } catch (error) {
+        console.error('Summary error:', error);
+        res.status(500).json({ error: 'Failed to generate summary' });
+    }
+});
+
+// Get unique event names (admin auth required)
+app.get('/api/analytics/event-names', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const events = loadAnalyticsEvents();
+        const eventNames = [...new Set(events.map(e => e.event_name))];
+
+        res.json({ event_names: eventNames.sort() });
+
+    } catch (error) {
+        console.error('Event names error:', error);
+        res.status(500).json({ error: 'Failed to get event names' });
+    }
+});
+
+// Clear analytics data (admin auth required)
+app.delete('/api/analytics/clear', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
+        fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
+
+        console.log('Analytics data cleared');
+
+        res.json({ success: true, message: 'Analytics data cleared' });
+
+    } catch (error) {
+        console.error('Clear analytics error:', error);
+        res.status(500).json({ error: 'Failed to clear analytics' });
+    }
+});
+
+// ============================================
+// END ANALYTICS API ENDPOINTS
+// ============================================
 
 // Admin reset with secret key (production safe)
 app.delete('/api/admin/reset', (req, res) => {
