@@ -82,3 +82,12 @@ export async function getEventNames() {
 export async function clearAnalytics() {
   return fetchWithAuth(`${API_BASE}/clear`, { method: 'DELETE' });
 }
+
+// Get event breakdown by property values
+export async function getEventBreakdown(eventName, propertyName = null) {
+  const params = new URLSearchParams();
+  params.set('event_name', eventName);
+  if (propertyName) params.set('property', propertyName);
+
+  return fetchWithAuth(`${API_BASE}/event-breakdown?${params}`);
+}

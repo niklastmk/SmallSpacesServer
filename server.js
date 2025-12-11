@@ -1546,6 +1546,92 @@ app.get('/api/analytics/summary', (req, res) => {
     }
 });
 
+// Get property breakdown for a specific event (admin auth required)
+app.get('/api/analytics/event-breakdown', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const eventName = req.query.event_name;
+        const propertyName = req.query.property;
+
+        if (!eventName) {
+            return res.status(400).json({ error: 'event_name query parameter is required' });
+        }
+
+        let events = loadAnalyticsEvents();
+
+        // Filter to specific event
+        events = events.filter(e => e.event_name === eventName);
+
+        if (events.length === 0) {
+            return res.json({
+                event_name: eventName,
+                total_count: 0,
+                properties: {},
+                breakdown: []
+            });
+        }
+
+        // Get all property names used in this event
+        const propertyNames = new Set();
+        for (const event of events) {
+            if (event.properties) {
+                Object.keys(event.properties).forEach(key => propertyNames.add(key));
+            }
+        }
+
+        // If a specific property is requested, get breakdown for that property
+        if (propertyName) {
+            const valueCounts = {};
+            for (const event of events) {
+                const value = event.properties?.[propertyName] || '(empty)';
+                valueCounts[value] = (valueCounts[value] || 0) + 1;
+            }
+
+            const breakdown = Object.entries(valueCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([value, count]) => ({ value, count }));
+
+            return res.json({
+                event_name: eventName,
+                property: propertyName,
+                total_count: events.length,
+                breakdown
+            });
+        }
+
+        // Otherwise, return breakdown for all properties
+        const allBreakdowns = {};
+        for (const prop of propertyNames) {
+            const valueCounts = {};
+            for (const event of events) {
+                const value = event.properties?.[prop] || '(empty)';
+                valueCounts[value] = (valueCounts[value] || 0) + 1;
+            }
+            allBreakdowns[prop] = Object.entries(valueCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 20) // Top 20 values per property
+                .map(([value, count]) => ({ value, count }));
+        }
+
+        res.json({
+            event_name: eventName,
+            total_count: events.length,
+            properties: [...propertyNames],
+            breakdowns: allBreakdowns
+        });
+
+    } catch (error) {
+        console.error('Event breakdown error:', error);
+        res.status(500).json({ error: 'Failed to get event breakdown' });
+    }
+});
+
 // Get unique event names (admin auth required)
 app.get('/api/analytics/event-names', (req, res) => {
     const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
