@@ -133,6 +133,11 @@ function App() {
 
   const handleLogout = () => {
     clearAdminKey()
+    // Prompt for new key immediately
+    const newKey = prompt('Enter new admin key:')
+    if (newKey) {
+      localStorage.setItem('adminKey', newKey)
+    }
     window.location.reload()
   }
 
