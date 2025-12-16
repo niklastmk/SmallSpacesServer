@@ -43,6 +43,7 @@ Analytics system for tracking game events from Unreal Engine Blueprints, storing
 | `/api/analytics/event-names` | GET | List unique event names |
 | `/api/analytics/event-breakdown` | GET | Property value breakdown |
 | `/api/analytics/clear` | DELETE | Clear all analytics data |
+| `/api/admin/reset-analytics` | DELETE | Clear all analytics data (admin endpoint) |
 
 ### Event Schema
 
