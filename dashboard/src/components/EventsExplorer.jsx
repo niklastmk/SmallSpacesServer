@@ -103,6 +103,7 @@ function EventsExplorer() {
   const [events, setEvents] = useState([])
   const [eventNames, setEventNames] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const limit = 50
@@ -114,16 +115,20 @@ function EventsExplorer() {
   const fetchEvents = async () => {
     try {
       setLoading(true)
+      setError(null)
+      console.log('Fetching events with params:', { selectedEvent, sessionFilter, limit, offset })
       const data = await getEvents({
         eventName: selectedEvent || undefined,
         sessionId: sessionFilter || undefined,
         limit,
         offset
       })
-      setEvents(data.events)
-      setTotal(data.total)
+      console.log('Events fetched:', data)
+      setEvents(data.events || [])
+      setTotal(data.total || 0)
     } catch (err) {
       console.error('Failed to fetch events:', err)
+      setError(err.message)
     } finally {
       setLoading(false)
     }
@@ -188,11 +193,17 @@ function EventsExplorer() {
         </button>
       </div>
 
+      {error && (
+        <div style={{ ...styles.noData, color: '#ff6b6b', background: '#67000d', padding: '20px', borderRadius: '8px' }}>
+          Error loading events: {error}
+        </div>
+      )}
+
       {loading ? (
         <div style={styles.loading}>Loading events...</div>
-      ) : events.length === 0 ? (
+      ) : events.length === 0 && !error ? (
         <div style={styles.noData}>No events found</div>
-      ) : (
+      ) : !error && (
         <>
           <table style={styles.table}>
             <thead>

@@ -103,6 +103,7 @@ function EventBreakdown() {
   const [selectedProperty, setSelectedProperty] = useState(null)
   const [breakdown, setBreakdown] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   // Fetch event names on mount
   useEffect(() => {
@@ -126,8 +127,11 @@ function EventBreakdown() {
 
     const fetchBreakdown = async () => {
       setLoading(true)
+      setError(null)
       try {
+        console.log('Fetching breakdown for event:', selectedEvent)
         const data = await getEventBreakdown(selectedEvent)
+        console.log('Breakdown data:', data)
         setBreakdown(data)
         // Auto-select first property
         if (data.properties?.length > 0 && !selectedProperty) {
@@ -135,6 +139,7 @@ function EventBreakdown() {
         }
       } catch (err) {
         console.error('Failed to fetch breakdown:', err)
+        setError(err.message)
       } finally {
         setLoading(false)
       }
@@ -170,6 +175,12 @@ function EventBreakdown() {
           </span>
         )}
       </div>
+
+      {error && (
+        <div style={{ ...styles.noData, color: '#ff6b6b', background: '#67000d', padding: '20px', borderRadius: '8px' }}>
+          Error loading breakdown: {error}
+        </div>
+      )}
 
       {loading ? (
         <div style={styles.loading}>Loading breakdown...</div>
