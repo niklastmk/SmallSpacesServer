@@ -291,8 +291,11 @@ app.get('/api/designs', (req, res) => {
         // Get level filter parameter
         const levelFilter = req.query.level;
 
+        // Get date filter parameter (fromDate)
+        const fromDate = req.query.fromDate;
+
         // DEBUG: Log the actual query parameters received
-        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", level="${levelFilter}"`);
+        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", level="${levelFilter}", fromDate="${fromDate}"`);
 
         // Filter by search query if provided
         if (searchQuery && searchQuery.trim() !== '') {
@@ -312,6 +315,17 @@ app.get('/api/designs', (req, res) => {
             });
         }
 
+        // Filter by date if provided (only show designs from this date onwards)
+        if (fromDate && fromDate.trim() !== '') {
+            const filterDate = new Date(fromDate);
+            if (!isNaN(filterDate.getTime())) {
+                allMetadata = allMetadata.filter(design => {
+                    const designDate = new Date(design.upload_date);
+                    return designDate >= filterDate;
+                });
+            }
+        }
+
         // Sort based on the specified mode
         if (sortMode === 'downloads') {
             // Sort by download count (highest first), then by upload date (newest first)
@@ -326,10 +340,11 @@ app.get('/api/designs', (req, res) => {
             allMetadata.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
         }
 
-        // ALWAYS return ALL designs (filtered if search/level provided) - no pagination
+        // ALWAYS return ALL designs (filtered if search/level/date provided) - no pagination
         let logMessage = `Browse request: returning ${allMetadata.length} designs`;
         if (searchQuery) logMessage += `, search="${searchQuery}"`;
         if (levelFilter) logMessage += `, level="${levelFilter}"`;
+        if (fromDate) logMessage += `, fromDate="${fromDate}"`;
         logMessage += `, sort=${sortMode}`;
         console.log(logMessage);
 
@@ -602,7 +617,7 @@ app.get('/', (req, res) => {
         endpoints: {
             designs: [
                 'POST /api/designs - Upload design',
-                'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath} - Browse designs',
+                'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath}&fromDate={ISO8601} - Browse designs',
                 'POST /api/designs/:id/download - Download design (Base64)',
                 'POST /api/designs/:id/download/binary - Download design (Binary - FAST)',
                 'POST /api/designs/metadata - Get metadata for multiple designs by IDs',
