@@ -639,6 +639,8 @@ app.get('/', (req, res) => {
                 'GET /api/admin/export-censored - Export censored entries',
                 'POST /api/admin/import-corrections - Import corrections',
                 'POST /api/admin/repair-censored - Auto-repair censored text',
+                'DELETE /api/admin/reset - Clear all designs and metadata (requires admin key)',
+                'DELETE /api/admin/reset-analytics - Clear all analytics data (requires admin key)',
                 'GET /api/health - Health check'
             ]
         }
@@ -1727,6 +1729,40 @@ app.delete('/api/admin/reset', (req, res) => {
     } catch (error) {
         console.error('Admin reset error:', error);
         res.status(500).json({ error: 'Failed to reset server data' });
+    }
+});
+
+// Clear analytics data only (admin protected)
+app.delete('/api/admin/reset-analytics', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        // Clear analytics events
+        if (fs.existsSync(ANALYTICS_EVENTS_FILE)) {
+            fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
+            console.log('Analytics events cleared');
+        }
+
+        // Clear analytics sessions
+        if (fs.existsSync(ANALYTICS_SESSIONS_FILE)) {
+            fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
+            console.log('Analytics sessions cleared');
+        }
+
+        console.log('ADMIN RESET: Analytics data cleared');
+        res.json({
+            success: true,
+            message: 'All analytics data has been cleared'
+        });
+
+    } catch (error) {
+        console.error('Analytics reset error:', error);
+        res.status(500).json({ error: 'Failed to clear analytics data' });
     }
 });
 
