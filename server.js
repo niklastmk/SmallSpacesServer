@@ -195,7 +195,7 @@ async function compressAndSaveThumbnail(base64Data, filename) {
 // Upload design
 app.post('/api/designs', async (req, res) => {
     try {
-        const { designId, title, description, authorName, level, saveData, thumbnail } = req.body;
+        const { designId, title, description, authorName, level, saveData, thumbnail, christmasEvent } = req.body;
 
 
         // Validate required fields
@@ -242,9 +242,10 @@ app.post('/api/designs', async (req, res) => {
                 level: level || '',
                 download_count: existingDesign.download_count, // Preserve download count
                 upload_date: new Date().toISOString(), // Update to current time
-                thumbnail_url: thumbnailUrl || existingDesign.thumbnail_url // Use new thumbnail or keep existing
+                thumbnail_url: thumbnailUrl || existingDesign.thumbnail_url, // Use new thumbnail or keep existing
+                christmas_event: christmasEvent === true // Boolean flag for Christmas event designs
             };
-            console.log(`Design updated: ${title} by ${authorName} (ID: ${finalDesignId})`);
+            console.log(`Design updated: ${title} by ${authorName} (ID: ${finalDesignId})${christmasEvent ? ' [Christmas Event]' : ''}`);
         } else {
             // Create new design
             const designMetadata = {
@@ -255,10 +256,11 @@ app.post('/api/designs', async (req, res) => {
                 level: level || '',
                 download_count: 0,
                 upload_date: new Date().toISOString(),
-                thumbnail_url: thumbnailUrl
+                thumbnail_url: thumbnailUrl,
+                christmas_event: christmasEvent === true // Boolean flag for Christmas event designs
             };
             allMetadata.push(designMetadata);
-            console.log(`Design created: ${title} by ${authorName} (ID: ${finalDesignId})`);
+            console.log(`Design created: ${title} by ${authorName} (ID: ${finalDesignId})${christmasEvent ? ' [Christmas Event]' : ''}`);
         }
         
         saveMetadata(allMetadata);
@@ -288,14 +290,31 @@ app.get('/api/designs', (req, res) => {
         // Get search query parameter
         const searchQuery = req.query.search;
 
-        // Get level filter parameter
+        // Get level filter parameter (single string)
         const levelFilter = req.query.level;
+
+        // Get level filters parameter (JSON array of strings for localized level names)
+        let levelFilters = null;
+        if (req.query.levelFilters) {
+            try {
+                levelFilters = JSON.parse(req.query.levelFilters);
+                if (!Array.isArray(levelFilters)) {
+                    levelFilters = null;
+                }
+            } catch (e) {
+                // Invalid JSON, ignore
+                levelFilters = null;
+            }
+        }
 
         // Get date filter parameter (fromDate)
         const fromDate = req.query.fromDate;
 
+        // Get Christmas event filter (true = only Christmas designs, false = exclude them, omit = all)
+        const christmasEventFilter = req.query.christmasEvent;
+
         // DEBUG: Log the actual query parameters received
-        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", level="${levelFilter}", fromDate="${fromDate}"`);
+        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", level="${levelFilter}", levelFilters=${levelFilters ? JSON.stringify(levelFilters) : 'null'}, fromDate="${fromDate}", christmasEvent="${christmasEventFilter}"`);
 
         // Filter by search query if provided
         if (searchQuery && searchQuery.trim() !== '') {
@@ -307,8 +326,16 @@ app.get('/api/designs', (req, res) => {
             });
         }
 
-        // Filter by level if provided (exact match or contains)
-        if (levelFilter && levelFilter.trim() !== '') {
+        // Filter by level - supports both single level and array of localized level names
+        if (levelFilters && levelFilters.length > 0) {
+            // Use array of filters (for localized level names)
+            allMetadata = allMetadata.filter(design => {
+                if (!design.level) return false;
+                // Match if design.level contains ANY of the filter strings
+                return levelFilters.some(filter => design.level.includes(filter));
+            });
+        } else if (levelFilter && levelFilter.trim() !== '') {
+            // Fallback to single level filter (backward compatible)
             allMetadata = allMetadata.filter(design => {
                 // Support both exact match and partial match (for flexibility)
                 return design.level && design.level.includes(levelFilter);
@@ -324,6 +351,16 @@ app.get('/api/designs', (req, res) => {
                     return designDate >= filterDate;
                 });
             }
+        }
+
+        // Filter by Christmas event flag if provided
+        if (christmasEventFilter !== undefined && christmasEventFilter !== '') {
+            const wantChristmas = christmasEventFilter === 'true' || christmasEventFilter === true;
+            allMetadata = allMetadata.filter(design => {
+                // Treat missing/undefined christmas_event as false (backward compatible)
+                const isChristmas = design.christmas_event === true;
+                return wantChristmas ? isChristmas : !isChristmas;
+            });
         }
 
         // Sort based on the specified mode
@@ -343,8 +380,10 @@ app.get('/api/designs', (req, res) => {
         // ALWAYS return ALL designs (filtered if search/level/date provided) - no pagination
         let logMessage = `Browse request: returning ${allMetadata.length} designs`;
         if (searchQuery) logMessage += `, search="${searchQuery}"`;
-        if (levelFilter) logMessage += `, level="${levelFilter}"`;
+        if (levelFilters) logMessage += `, levelFilters=[${levelFilters.join(', ')}]`;
+        else if (levelFilter) logMessage += `, level="${levelFilter}"`;
         if (fromDate) logMessage += `, fromDate="${fromDate}"`;
+        if (christmasEventFilter !== undefined && christmasEventFilter !== '') logMessage += `, christmasEvent=${christmasEventFilter}`;
         logMessage += `, sort=${sortMode}`;
         console.log(logMessage);
 
@@ -432,6 +471,7 @@ app.post('/api/designs/:id/download', (req, res) => {
             response.download_count = designMetadata.download_count;
             response.upload_date = designMetadata.upload_date;
             response.thumbnail_url = designMetadata.thumbnail_url;
+            response.christmas_event = designMetadata.christmas_event === true; // Default to false if missing
         }
 
         res.json(response);
@@ -474,7 +514,8 @@ app.post('/api/designs/:id/download/binary', (req, res) => {
                 level: designMetadata.level,
                 download_count: designMetadata.download_count,
                 upload_date: designMetadata.upload_date,
-                thumbnail_url: designMetadata.thumbnail_url
+                thumbnail_url: designMetadata.thumbnail_url,
+                christmas_event: designMetadata.christmas_event === true // Default to false if missing
             });
             // Base64 encode to support Chinese, Japanese, Korean, and other non-ASCII characters
             const metadataBase64 = Buffer.from(metadataJson, 'utf8').toString('base64');
@@ -543,7 +584,8 @@ app.post('/api/designs/metadata', (req, res) => {
             level: design.level,
             download_count: design.download_count,
             upload_date: design.upload_date,
-            thumbnail_url: design.thumbnail_url
+            thumbnail_url: design.thumbnail_url,
+            christmas_event: design.christmas_event === true // Default to false if missing
         }));
 
         console.log(`Returning metadata for ${designs.length} design(s)`);
@@ -617,7 +659,7 @@ app.get('/', (req, res) => {
         endpoints: {
             designs: [
                 'POST /api/designs - Upload design',
-                'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath}&fromDate={ISO8601} - Browse designs',
+                'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath}&levelFilters={JSON array}&fromDate={ISO8601}&christmasEvent={true|false} - Browse designs',
                 'POST /api/designs/:id/download - Download design (Base64)',
                 'POST /api/designs/:id/download/binary - Download design (Binary - FAST)',
                 'POST /api/designs/metadata - Get metadata for multiple designs by IDs',
