@@ -1849,7 +1849,7 @@ app.delete('/api/admin/reset-analytics', (req, res) => {
 // Upload crash report (no auth required - game clients send these)
 app.post('/api/crashes', (req, res) => {
     try {
-        const { crashData, filename, sessionId, clientVersion, platform, errorMessage } = req.body;
+        const { crashData, filename, sessionId, errorMessage, metadata } = req.body;
 
         if (!crashData) {
             return res.status(400).json({ error: 'crashData is required' });
@@ -1864,24 +1864,35 @@ app.post('/api/crashes', (req, res) => {
         const buffer = Buffer.from(crashData, 'base64');
         fs.writeFileSync(crashPath, buffer);
 
-        // Save metadata
+        // Parse metadata from the metadata object (sent alongside zip)
+        const meta = metadata || {};
+
+        // Save crash metadata
         const crashMetadata = {
             id: crashId,
             filename: originalFilename,
             stored_filename: storedFilename,
             session_id: sessionId || 'unknown',
-            client_version: clientVersion || 'unknown',
-            platform: platform || 'unknown',
             error_message: errorMessage || '',
             file_size: buffer.length,
-            upload_date: new Date().toISOString()
+            upload_date: new Date().toISOString(),
+            // Game/system info from metadata JSON
+            game: meta.game || 'SmallSpaces',
+            version: meta.version || 'unknown',
+            platform: meta.platform || 'unknown',
+            rhi: meta.rhi || 'unknown',
+            gpu: meta.gpu || 'unknown',
+            driver: meta.driver || 'unknown',
+            steam_appid: meta.steam_appid || '',
+            build_id: meta.build_id || '',
+            timestamp_utc: meta.timestamp_utc || ''
         };
 
         const allCrashes = loadCrashesMetadata();
         allCrashes.push(crashMetadata);
         saveCrashesMetadata(allCrashes);
 
-        console.log(`Crash report uploaded: ${originalFilename} (${(buffer.length / 1024).toFixed(1)} KB) - Session: ${sessionId || 'unknown'}`);
+        console.log(`Crash report uploaded: ${originalFilename} (${(buffer.length / 1024).toFixed(1)} KB) - Version: ${crashMetadata.version}, GPU: ${crashMetadata.gpu}`);
 
         res.json({
             success: true,

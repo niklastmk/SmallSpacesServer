@@ -44,14 +44,38 @@ const styles = {
     padding: '12px 8px',
     borderBottom: '1px solid #2f3336',
     color: '#e7e9ea',
-    fontSize: '14px'
+    fontSize: '14px',
+    verticalAlign: 'top'
   },
-  errorCell: {
-    maxWidth: '300px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    color: '#ff6b6b'
+  clickableRow: {
+    cursor: 'pointer'
+  },
+  expandedRow: {
+    background: '#1a1d21'
+  },
+  detailsCell: {
+    padding: '16px',
+    background: '#1a1d21'
+  },
+  detailsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gap: '12px'
+  },
+  detailItem: {
+    background: '#2f3336',
+    padding: '8px 12px',
+    borderRadius: '6px'
+  },
+  detailLabel: {
+    fontSize: '11px',
+    color: '#71767b',
+    marginBottom: '2px'
+  },
+  detailValue: {
+    fontSize: '13px',
+    color: '#e7e9ea',
+    wordBreak: 'break-all'
   },
   actionBtn: {
     background: '#1d9bf0',
@@ -92,6 +116,10 @@ const styles = {
     background: '#1d4ed8',
     color: '#fff'
   },
+  gpuBadge: {
+    background: '#059669',
+    color: '#fff'
+  },
   loading: {
     textAlign: 'center',
     padding: '40px',
@@ -107,7 +135,8 @@ const styles = {
   stats: {
     display: 'flex',
     gap: '16px',
-    marginBottom: '16px'
+    marginBottom: '16px',
+    flexWrap: 'wrap'
   },
   stat: {
     background: '#2f3336',
@@ -133,6 +162,11 @@ function CrashReports() {
   const [crashes, setCrashes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [expandedId, setExpandedId] = useState(null)
+
+  const toggleExpand = (id) => {
+    setExpandedId(expandedId === id ? null : id)
+  }
 
   const fetchCrashes = async () => {
     try {
@@ -224,48 +258,101 @@ function CrashReports() {
           <thead>
             <tr>
               <th style={styles.th}>Date</th>
-              <th style={styles.th}>Filename</th>
-              <th style={styles.th}>Platform</th>
               <th style={styles.th}>Version</th>
+              <th style={styles.th}>Platform</th>
+              <th style={styles.th}>GPU</th>
               <th style={styles.th}>Size</th>
-              <th style={styles.th}>Error</th>
               <th style={styles.th}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {crashes.map(crash => (
-              <tr key={crash.id}>
-                <td style={styles.td}>{formatDate(crash.upload_date)}</td>
-                <td style={styles.td}>{crash.filename}</td>
-                <td style={styles.td}>
-                  <span style={{...styles.badge, ...styles.platformBadge}}>
-                    {crash.platform}
-                  </span>
-                </td>
-                <td style={styles.td}>{crash.client_version}</td>
-                <td style={styles.td}>
-                  <span style={{...styles.badge, ...styles.sizeBadge}}>
-                    {formatFileSize(crash.file_size)}
-                  </span>
-                </td>
-                <td style={{...styles.td, ...styles.errorCell}} title={crash.error_message}>
-                  {crash.error_message || '-'}
-                </td>
-                <td style={styles.td}>
-                  <button
-                    style={styles.actionBtn}
-                    onClick={() => handleDownload(crash.id, crash.filename)}
-                  >
-                    Download
-                  </button>
-                  <button
-                    style={styles.deleteBtn}
-                    onClick={() => handleDelete(crash.id)}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
+              <React.Fragment key={crash.id}>
+                <tr
+                  style={expandedId === crash.id ? styles.expandedRow : styles.clickableRow}
+                  onClick={() => toggleExpand(crash.id)}
+                >
+                  <td style={styles.td}>
+                    {formatDate(crash.upload_date)}
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{...styles.badge, ...styles.platformBadge}}>
+                      {crash.version || crash.client_version || 'unknown'}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{...styles.badge, ...styles.platformBadge}}>
+                      {crash.platform}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{...styles.badge, ...styles.gpuBadge}}>
+                      {crash.gpu || 'unknown'}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{...styles.badge, ...styles.sizeBadge}}>
+                      {formatFileSize(crash.file_size)}
+                    </span>
+                  </td>
+                  <td style={styles.td} onClick={e => e.stopPropagation()}>
+                    <button
+                      style={styles.actionBtn}
+                      onClick={() => handleDownload(crash.id, crash.filename)}
+                    >
+                      Download
+                    </button>
+                    <button
+                      style={styles.deleteBtn}
+                      onClick={() => handleDelete(crash.id)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+                {expandedId === crash.id && (
+                  <tr>
+                    <td colSpan="6" style={styles.detailsCell}>
+                      <div style={styles.detailsGrid}>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>Filename</div>
+                          <div style={styles.detailValue}>{crash.filename}</div>
+                        </div>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>RHI</div>
+                          <div style={styles.detailValue}>{crash.rhi || '-'}</div>
+                        </div>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>Driver</div>
+                          <div style={styles.detailValue}>{crash.driver || '-'}</div>
+                        </div>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>Build ID</div>
+                          <div style={styles.detailValue}>{crash.build_id || '-'}</div>
+                        </div>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>Steam App ID</div>
+                          <div style={styles.detailValue}>{crash.steam_appid || '-'}</div>
+                        </div>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>Session ID</div>
+                          <div style={styles.detailValue}>{crash.session_id || '-'}</div>
+                        </div>
+                        <div style={styles.detailItem}>
+                          <div style={styles.detailLabel}>Crash Timestamp</div>
+                          <div style={styles.detailValue}>{crash.timestamp_utc || '-'}</div>
+                        </div>
+                        {crash.error_message && (
+                          <div style={{...styles.detailItem, gridColumn: '1 / -1'}}>
+                            <div style={styles.detailLabel}>Error Message</div>
+                            <div style={{...styles.detailValue, color: '#ff6b6b'}}>{crash.error_message}</div>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
