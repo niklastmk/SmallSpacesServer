@@ -6,6 +6,7 @@ import TopEventsTable from './components/TopEventsTable'
 import EventsExplorer from './components/EventsExplorer'
 import SessionsList from './components/SessionsList'
 import EventBreakdown from './components/EventBreakdown'
+import CrashReports from './components/CrashReports'
 
 const styles = {
   container: {
@@ -176,7 +177,7 @@ function App() {
       )}
 
       <div style={styles.tabs}>
-        {['overview', 'breakdown', 'events', 'sessions'].map(tab => (
+        {['overview', 'breakdown', 'events', 'sessions', 'crashes'].map(tab => (
           <button
             key={tab}
             style={{
@@ -238,6 +239,10 @@ function App() {
 
       {activeTab === 'sessions' && (
         <SessionsList />
+      )}
+
+      {activeTab === 'crashes' && (
+        <CrashReports />
       )}
     </div>
   )

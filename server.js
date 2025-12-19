@@ -54,11 +54,16 @@ const ANALYTICS_DIR = path.join(STORAGE_DIR, 'analytics');
 const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, 'events.json');
 const ANALYTICS_SESSIONS_FILE = path.join(ANALYTICS_DIR, 'sessions.json');
 
+// Crash reports storage
+const CRASHES_DIR = path.join(STORAGE_DIR, 'crashes');
+const CRASHES_METADATA_FILE = path.join(STORAGE_DIR, 'crashes_metadata.json');
+
 // Ensure storage directories exist
 try {
     fs.ensureDirSync(DESIGNS_DIR);
     fs.ensureDirSync(THUMBNAILS_DIR);
     fs.ensureDirSync(ANALYTICS_DIR);
+    fs.ensureDirSync(CRASHES_DIR);
     console.log('Storage directories created/verified');
 } catch (error) {
     console.error('Failed to create storage directories:', error);
@@ -89,6 +94,17 @@ try {
 } catch (error) {
     console.error('Failed to initialize analytics files:', error);
     // Non-fatal - analytics is optional
+}
+
+// Initialize crashes metadata file if it doesn't exist
+try {
+    if (!fs.existsSync(CRASHES_METADATA_FILE)) {
+        fs.writeJsonSync(CRASHES_METADATA_FILE, []);
+        console.log('Crashes metadata file initialized');
+    }
+} catch (error) {
+    console.error('Failed to initialize crashes metadata file:', error);
+    // Non-fatal - crashes is optional
 }
 
 // Helper functions
@@ -187,6 +203,24 @@ async function compressAndSaveThumbnail(base64Data, filename) {
         console.error('Error compressing thumbnail:', error);
         // Fallback to original save
         return saveBase64File(base64Data, filename) ? filename : null;
+    }
+}
+
+// Crash report helper functions
+function loadCrashesMetadata() {
+    try {
+        return fs.readJsonSync(CRASHES_METADATA_FILE);
+    } catch (error) {
+        console.error('Error loading crashes metadata:', error);
+        return [];
+    }
+}
+
+function saveCrashesMetadata(metadata) {
+    try {
+        fs.writeJsonSync(CRASHES_METADATA_FILE, metadata, { spaces: 2 });
+    } catch (error) {
+        console.error('Error saving crashes metadata:', error);
     }
 }
 
@@ -1805,6 +1839,157 @@ app.delete('/api/admin/reset-analytics', (req, res) => {
     } catch (error) {
         console.error('Analytics reset error:', error);
         res.status(500).json({ error: 'Failed to clear analytics data' });
+    }
+});
+
+// ============================================
+// CRASH REPORTS API ENDPOINTS
+// ============================================
+
+// Upload crash report (no auth required - game clients send these)
+app.post('/api/crashes', (req, res) => {
+    try {
+        const { crashData, filename, sessionId, clientVersion, platform, errorMessage } = req.body;
+
+        if (!crashData) {
+            return res.status(400).json({ error: 'crashData is required' });
+        }
+
+        const crashId = uuidv4();
+        const originalFilename = filename || `crash_${crashId}.zip`;
+        const storedFilename = `${crashId}_${originalFilename}`;
+        const crashPath = path.join(CRASHES_DIR, storedFilename);
+
+        // Decode and save the crash file
+        const buffer = Buffer.from(crashData, 'base64');
+        fs.writeFileSync(crashPath, buffer);
+
+        // Save metadata
+        const crashMetadata = {
+            id: crashId,
+            filename: originalFilename,
+            stored_filename: storedFilename,
+            session_id: sessionId || 'unknown',
+            client_version: clientVersion || 'unknown',
+            platform: platform || 'unknown',
+            error_message: errorMessage || '',
+            file_size: buffer.length,
+            upload_date: new Date().toISOString()
+        };
+
+        const allCrashes = loadCrashesMetadata();
+        allCrashes.push(crashMetadata);
+        saveCrashesMetadata(allCrashes);
+
+        console.log(`Crash report uploaded: ${originalFilename} (${(buffer.length / 1024).toFixed(1)} KB) - Session: ${sessionId || 'unknown'}`);
+
+        res.json({
+            success: true,
+            crash_id: crashId,
+            message: 'Crash report uploaded successfully'
+        });
+
+    } catch (error) {
+        console.error('Crash upload error:', error);
+        res.status(500).json({ error: 'Failed to upload crash report' });
+    }
+});
+
+// List all crash reports (admin auth required)
+app.get('/api/crashes', (req, res) => {
+    const adminKey = req.headers['x-admin-key'];
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const crashes = loadCrashesMetadata();
+
+        // Sort by upload date (newest first)
+        crashes.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+
+        res.json({
+            crashes: crashes,
+            total: crashes.length
+        });
+
+    } catch (error) {
+        console.error('Crash list error:', error);
+        res.status(500).json({ error: 'Failed to list crash reports' });
+    }
+});
+
+// Download crash report (admin auth required)
+app.get('/api/crashes/:id/download', (req, res) => {
+    const adminKey = req.headers['x-admin-key'];
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const crashId = req.params.id;
+        const crashes = loadCrashesMetadata();
+        const crash = crashes.find(c => c.id === crashId);
+
+        if (!crash) {
+            return res.status(404).json({ error: 'Crash report not found' });
+        }
+
+        const crashPath = path.join(CRASHES_DIR, crash.stored_filename);
+
+        if (!fs.existsSync(crashPath)) {
+            return res.status(404).json({ error: 'Crash file not found on disk' });
+        }
+
+        // Send file for download
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${crash.filename}"`);
+        res.sendFile(crashPath);
+
+    } catch (error) {
+        console.error('Crash download error:', error);
+        res.status(500).json({ error: 'Failed to download crash report' });
+    }
+});
+
+// Delete crash report (admin auth required)
+app.delete('/api/crashes/:id', (req, res) => {
+    const adminKey = req.headers['x-admin-key'];
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const crashId = req.params.id;
+        const crashes = loadCrashesMetadata();
+        const crashIndex = crashes.findIndex(c => c.id === crashId);
+
+        if (crashIndex === -1) {
+            return res.status(404).json({ error: 'Crash report not found' });
+        }
+
+        const crash = crashes[crashIndex];
+        const crashPath = path.join(CRASHES_DIR, crash.stored_filename);
+
+        // Delete file if it exists
+        if (fs.existsSync(crashPath)) {
+            fs.unlinkSync(crashPath);
+        }
+
+        // Remove from metadata
+        crashes.splice(crashIndex, 1);
+        saveCrashesMetadata(crashes);
+
+        console.log(`Crash report deleted: ${crash.filename} (ID: ${crashId})`);
+
+        res.json({
+            success: true,
+            message: 'Crash report deleted successfully'
+        });
+
+    } catch (error) {
+        console.error('Crash delete error:', error);
+        res.status(500).json({ error: 'Failed to delete crash report' });
     }
 });
 

@@ -91,3 +91,22 @@ export async function getEventBreakdown(eventName, propertyName = null) {
 
   return fetchWithAuth(`${API_BASE}/event-breakdown?${params}`);
 }
+
+// ============================================
+// CRASH REPORTS API
+// ============================================
+
+// Get all crash reports
+export async function getCrashes() {
+  return fetchWithAuth('/api/crashes');
+}
+
+// Delete a crash report
+export async function deleteCrash(crashId) {
+  return fetchWithAuth(`/api/crashes/${crashId}`, { method: 'DELETE' });
+}
+
+// Get crash download URL (returns the URL, doesn't download directly)
+export function getCrashDownloadUrl(crashId) {
+  return `/api/crashes/${crashId}/download`;
+}
