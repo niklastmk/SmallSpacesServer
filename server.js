@@ -1769,6 +1769,51 @@ app.delete('/api/analytics/clear', (req, res) => {
     }
 });
 
+// Delete events before a certain date (admin auth required)
+app.delete('/api/analytics/events/before', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const beforeDate = req.query.date;
+
+        if (!beforeDate) {
+            return res.status(400).json({ error: 'date query parameter is required (ISO 8601 format)' });
+        }
+
+        const cutoffDate = new Date(beforeDate);
+        if (isNaN(cutoffDate.getTime())) {
+            return res.status(400).json({ error: 'Invalid date format. Use ISO 8601 (e.g., 2024-12-22T18:00:00Z)' });
+        }
+
+        const events = loadAnalyticsEvents();
+        const originalCount = events.length;
+
+        // Keep only events on or after the cutoff date
+        const filteredEvents = events.filter(e => new Date(e.timestamp) >= cutoffDate);
+        const deletedCount = originalCount - filteredEvents.length;
+
+        saveAnalyticsEvents(filteredEvents);
+
+        console.log(`Deleted ${deletedCount} events before ${beforeDate}. Remaining: ${filteredEvents.length}`);
+
+        res.json({
+            success: true,
+            deleted_count: deletedCount,
+            remaining_count: filteredEvents.length,
+            cutoff_date: cutoffDate.toISOString()
+        });
+
+    } catch (error) {
+        console.error('Delete events before date error:', error);
+        res.status(500).json({ error: 'Failed to delete events' });
+    }
+});
+
 // ============================================
 // END ANALYTICS API ENDPOINTS
 // ============================================
