@@ -328,6 +328,27 @@ function deriveSeverity(count) {
     return 'low';
 }
 
+// Derive a group key from the error message — groups by error pattern, not exact callstack
+function deriveGroupKey(ctx) {
+    const err = ctx.error_message || '';
+
+    // Extract [File:...\Filename.cpp] [Line: N] pattern
+    const fileLineMatch = err.match(/\[File:.*?([^\\\/:]+)\]\s*\[Line:\s*(\d+)\]/);
+    if (fileLineMatch) {
+        return `${fileLineMatch[1]}:${fileLineMatch[2]}`;
+    }
+
+    // For messages without file/line, normalize the first line
+    const firstLine = err.split('\n')[0].trim();
+    const normalized = firstLine
+        .replace(/0x[0-9a-fA-F]+/g, '0x_')           // hex addresses
+        .replace(/after \d+\.\d+ seconds/g, 'after N seconds')  // timeout values
+        .replace(/allocating \d+/g, 'allocating N')    // allocation sizes
+        .slice(0, 120);
+
+    return normalized || ctx.crash_type || 'unknown';
+}
+
 // Parse JSON from AI response (handles markdown code blocks)
 function parseAIJson(responseText) {
     try {
@@ -350,8 +371,8 @@ function categorizeAndGroupCrash(crashId) {
     const groups = loadCrashGroups();
     const ctx = crash.crash_context || {};
 
-    // Use callstack hash as the deterministic group key
-    const groupKey = ctx.callstack_hash || `unknown_${crashId}`;
+    // Group by error pattern (file+line or normalized message)
+    const groupKey = deriveGroupKey(ctx);
 
     // Category directly from UE5 crash_type
     const crashType = ctx.crash_type || 'Unknown';
