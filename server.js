@@ -2346,6 +2346,7 @@ app.post('/api/crashes/reclassify', async (req, res) => {
         const crashes = loadCrashesMetadata();
 
         if (crashes.length === 0) {
+            saveCrashGroups([]);
             return res.json({ success: true, message: 'No crashes to reclassify', reclassified: 0 });
         }
 
