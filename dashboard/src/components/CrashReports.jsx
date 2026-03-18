@@ -52,8 +52,12 @@ const s = {
 }
 
 const CRASH_TYPE_COLORS = {
-  OutOfMemory: '#ef4444', Assert: '#f59e0b', Ensure: '#8b5cf6', Hang: '#ea580c',
-  GPUCrash: '#3b82f6', Crash: '#ec4899', Other: '#6b7280', Unknown: '#374151'
+  'Shader Compilation': '#f59e0b', 'Out of VRAM': '#ef4444', 'Out of RAM': '#dc2626',
+  'Out of Memory': '#ef4444', 'GPU Crash': '#3b82f6', 'Render Hang': '#ea580c',
+  'Thread Hang': '#f97316', 'Config Error': '#8b5cf6', 'Access Violation': '#ec4899',
+  'Shader Mismatch': '#eab308', 'Material Error': '#a855f7', 'Threading Error': '#f472b6',
+  'Intentional Crash': '#6b7280', 'Fatal Error': '#e11d48', 'Assertion': '#a78bfa',
+  'Hang': '#ea580c', 'Crash': '#ec4899', 'Unknown': '#374151'
 }
 const SEVERITY_COLORS = { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#2563eb' }
 const PIE_COLORS = ['#ef4444', '#f59e0b', '#8b5cf6', '#ea580c', '#3b82f6', '#ec4899', '#10b981', '#6b7280']

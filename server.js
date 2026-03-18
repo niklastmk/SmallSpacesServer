@@ -310,15 +310,34 @@ function extractCrashContext(buffer) {
     }
 }
 
-// Map UE5 crash_type directly to category — no AI needed
-const CRASH_TYPE_MAP = {
-    'OutOfMemory': 'OutOfMemory',
-    'Assert': 'Assert',
-    'Ensure': 'Ensure',
-    'Hang': 'Hang',
-    'GPUCrash': 'GPUCrash',
-    'Crash': 'Crash'
-};
+// Derive a meaningful category from the error message content, not just crash_type
+function deriveCategory(ctx) {
+    const err = (ctx.error_message || '').toLowerCase();
+    const crashType = (ctx.crash_type || '').toLowerCase();
+
+    // Specific error patterns (checked first — most informative)
+    if (err.includes('shader compilation failures')) return 'Shader Compilation';
+    if (err.includes('out of video memory')) return 'Out of VRAM';
+    if (err.includes('ran out of memory') || err.includes('paging file')) return 'Out of RAM';
+    if (err.includes('gpu crash dump')) return 'GPU Crash';
+    if (err.includes('timed out waiting for renderthread')) return 'Render Hang';
+    if (err.includes('hang detected')) return 'Thread Hang';
+    if (err.includes('scalability.ini') || err.includes('ecvf_scalability')) return 'Config Error';
+    if (err.includes('exception_access_violation')) return 'Access Violation';
+    if (err.includes('uniformbuffer') || err.includes('shadertablehash')) return 'Shader Mismatch';
+    if (err.includes('material') && (err.includes('deleted') || err.includes('render proxy'))) return 'Material Error';
+    if (err.includes('isingamethread') || err.includes('isinrenderingthread')) return 'Threading Error';
+    if (err.includes('crashing the gamethread at your request')) return 'Intentional Crash';
+
+    // Fall back to crash_type for anything unmatched
+    if (crashType === 'outofmemory') return 'Out of Memory';
+    if (crashType === 'gpucrash') return 'GPU Crash';
+    if (crashType === 'hang') return 'Hang';
+    if (crashType === 'ensure') return 'Assertion';
+    if (crashType === 'assert') return 'Fatal Error';
+    if (crashType === 'crash') return 'Crash';
+    return 'Unknown';
+}
 
 // Derive severity from group crash count
 function deriveSeverity(count) {
@@ -374,13 +393,12 @@ function categorizeAndGroupCrash(crashId) {
     // Group by error pattern (file+line or normalized message)
     const groupKey = deriveGroupKey(ctx);
 
-    // Category directly from UE5 crash_type
-    const crashType = ctx.crash_type || 'Unknown';
-    const category = CRASH_TYPE_MAP[crashType] || 'Other';
+    // Derive meaningful category from error content
+    const category = deriveCategory(ctx);
 
     // Store classification on crash
     crash.category = category;
-    crash.crash_type = crashType;
+    crash.crash_type = ctx.crash_type || 'Unknown';
 
     // Find or create group by callstack hash
     let group = groups.find(g => g.group_key === groupKey);
@@ -2488,12 +2506,12 @@ app.get('/api/crashes/summary', (req, res) => {
         };
 
         // By crash type (from UE5 directly)
-        // By crash type — enriched with contextual hardware stats
+        // By category — enriched with contextual hardware stats
         const crashesByType = {};
         crashes.forEach(c => {
-            const ct = (c.crash_context && c.crash_context.crash_type) || c.crash_type || 'Unknown';
-            if (!crashesByType[ct]) crashesByType[ct] = [];
-            crashesByType[ct].push(c);
+            const cat = c.category || deriveCategory(c.crash_context || {});
+            if (!crashesByType[cat]) crashesByType[cat] = [];
+            crashesByType[cat].push(c);
         });
         const crashTypeBreakdown = Object.entries(crashesByType)
             .map(([name, typeCrashes]) => {
@@ -2543,13 +2561,13 @@ app.get('/api/crashes/summary', (req, res) => {
         // By version
         const versionBreakdown = countBy(crashes, c => c.version || 'unknown');
 
-        // Hardware cross-reference: crash type by GPU
+        // Hardware cross-reference: category by GPU
         const crashTypeByGpu = {};
         crashes.forEach(c => {
             const gpu = (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown';
-            const ct = (c.crash_context && c.crash_context.crash_type) || c.crash_type || 'Unknown';
+            const cat = c.category || deriveCategory(c.crash_context || {});
             if (!crashTypeByGpu[gpu]) crashTypeByGpu[gpu] = {};
-            crashTypeByGpu[gpu][ct] = (crashTypeByGpu[gpu][ct] || 0) + 1;
+            crashTypeByGpu[gpu][cat] = (crashTypeByGpu[gpu][cat] || 0) + 1;
         });
 
         // OOM details: RAM breakdown for OOM crashes specifically
