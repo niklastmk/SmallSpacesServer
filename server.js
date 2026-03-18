@@ -2488,7 +2488,37 @@ app.get('/api/crashes/summary', (req, res) => {
         };
 
         // By crash type (from UE5 directly)
-        const crashTypeBreakdown = countBy(crashes, c => (c.crash_context && c.crash_context.crash_type) || c.crash_type || 'Unknown');
+        // By crash type — enriched with contextual hardware stats
+        const crashesByType = {};
+        crashes.forEach(c => {
+            const ct = (c.crash_context && c.crash_context.crash_type) || c.crash_type || 'Unknown';
+            if (!crashesByType[ct]) crashesByType[ct] = [];
+            crashesByType[ct].push(c);
+        });
+        const crashTypeBreakdown = Object.entries(crashesByType)
+            .map(([name, typeCrashes]) => {
+                const gpus = {}, rams = {};
+                const sessionTimes = [];
+                typeCrashes.forEach(c => {
+                    const ctx = c.crash_context || {};
+                    const gpu = ctx.gpu || c.gpu || 'unknown';
+                    gpus[gpu] = (gpus[gpu] || 0) + 1;
+                    if (ctx.ram_gb) rams[ctx.ram_gb + ' GB'] = (rams[ctx.ram_gb + ' GB'] || 0) + 1;
+                    if (ctx.seconds_since_start != null) sessionTimes.push(ctx.seconds_since_start);
+                });
+                const topGpu = Object.entries(gpus).sort((a, b) => b[1] - a[1])[0];
+                const topRam = Object.entries(rams).sort((a, b) => b[1] - a[1])[0];
+                sessionTimes.sort((a, b) => a - b);
+                const medianTime = sessionTimes.length > 0 ? sessionTimes[Math.floor(sessionTimes.length / 2)] : null;
+                return {
+                    name,
+                    count: typeCrashes.length,
+                    top_gpu: topGpu ? `${topGpu[0]} (${topGpu[1]})` : null,
+                    top_ram: topRam ? `${topRam[0]} (${topRam[1]})` : null,
+                    median_session_time: medianTime
+                };
+            })
+            .sort((a, b) => b.count - a.count);
 
         // By GPU (prefer extracted)
         const gpuBreakdown = countBy(crashes, c => (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown');
@@ -2549,16 +2579,22 @@ app.get('/api/crashes/summary', (req, res) => {
             crashesPerDay.push({ date: date.toISOString().split('T')[0], count });
         }
 
-        // Top crash groups
+        // Top crash groups — enriched with session time stats
         const sortedGroups = [...groups].sort((a, b) => b.count - a.count);
-        const topGroups = sortedGroups.slice(0, 5).map(g => ({
-            id: g.id,
-            title: g.title,
-            count: g.count,
-            severity: g.severity,
-            category: g.category,
-            crash_type: g.crash_type
-        }));
+        const topGroups = sortedGroups.slice(0, 5).map(g => {
+            const groupCrashes = crashes.filter(c => g.crash_ids.includes(c.id));
+            const times = groupCrashes.map(c => c.crash_context && c.crash_context.seconds_since_start).filter(t => t != null).sort((a, b) => a - b);
+            const medianTime = times.length > 0 ? times[Math.floor(times.length / 2)] : null;
+            return {
+                id: g.id,
+                title: g.title,
+                count: g.count,
+                severity: g.severity,
+                category: g.category,
+                crash_type: g.crash_type,
+                median_session_time: medianTime
+            };
+        });
 
         res.json({
             total_crashes: totalCrashes,

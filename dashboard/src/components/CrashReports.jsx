@@ -67,6 +67,26 @@ function formatFileSize(bytes) {
 function formatDate(d) { return new Date(d).toLocaleString() }
 function formatShortDate(d) { return new Date(d).toLocaleDateString() }
 
+function formatSessionTime(seconds) {
+  if (seconds == null) return '-'
+  if (seconds < 60) return seconds + 's'
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's'
+  return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm'
+}
+
+function CrashTypeTooltip({ active, payload }) {
+  if (!active || !payload || !payload[0]) return null
+  const d = payload[0].payload
+  return (
+    <div style={{ background: '#1a1d21', border: '1px solid #2f3336', borderRadius: '8px', padding: '10px 14px', fontSize: '12px' }}>
+      <div style={{ fontWeight: '600', color: '#e7e9ea', marginBottom: '6px' }}>{d.name} — {d.count} crash{d.count !== 1 ? 'es' : ''}</div>
+      {d.top_gpu && <div style={{ color: '#71767b' }}>Top GPU: <span style={{ color: '#e7e9ea' }}>{d.top_gpu}</span></div>}
+      {d.top_ram && <div style={{ color: '#71767b' }}>Top RAM: <span style={{ color: '#e7e9ea' }}>{d.top_ram}</span></div>}
+      {d.median_session_time != null && <div style={{ color: '#71767b' }}>Median session time: <span style={{ color: '#e7e9ea' }}>{formatSessionTime(d.median_session_time)}</span></div>}
+    </div>
+  )
+}
+
 function CrashTypeBadge({ type }) {
   const color = CRASH_TYPE_COLORS[type] || CRASH_TYPE_COLORS.Other
   return <span style={{ ...s.badge, background: color + '22', color }}>{type}</span>
@@ -108,6 +128,11 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
                 <CrashTypeBadge type={g.crash_type || g.category} />
                 <SeverityBadge severity={g.severity} />
+                {g.median_session_time != null && (
+                  <span style={{ fontSize: '11px', color: '#71767b' }} title="Median time in session at crash">
+                    {formatSessionTime(g.median_session_time)}
+                  </span>
+                )}
                 <span style={{ fontSize: '14px', fontWeight: '700', color: '#e7e9ea', minWidth: '24px', textAlign: 'right' }}>{g.count}</span>
                 <span style={{ fontSize: '11px', color: '#71767b' }}>→</span>
               </div>
@@ -139,7 +164,7 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
                   label={({ name, count }) => `${name} (${count})`} labelLine={{ stroke: '#71767b' }} fontSize={10}>
                   {summary.crash_type_breakdown.map((e, i) => <Cell key={e.name} fill={CRASH_TYPE_COLORS[e.name] || PIE_COLORS[i % PIE_COLORS.length]} />)}
                 </Pie>
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Tooltip content={<CrashTypeTooltip />} />
               </PieChart>
             </ResponsiveContainer>
           ) : <div style={{ color: '#71767b', padding: '20px 0' }}>No data</div>}
@@ -205,7 +230,7 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
 
   const getHardwareBreakdown = (crashList) => {
     if (!crashList) return null
-    const gpus = {}, rams = {}, oss = {}
+    const gpus = {}, rams = {}, oss = {}, times = []
     crashList.forEach(c => {
       const ctx = c.crash_context || {}
       const gpu = ctx.gpu || c.gpu || 'unknown'
@@ -214,8 +239,13 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
       gpus[gpu] = (gpus[gpu] || 0) + 1
       rams[ram] = (rams[ram] || 0) + 1
       oss[os] = (oss[os] || 0) + 1
+      if (ctx.seconds_since_start != null) times.push(ctx.seconds_since_start)
     })
-    return { gpus, rams, oss }
+    times.sort((a, b) => a - b)
+    const median = times.length > 0 ? times[Math.floor(times.length / 2)] : null
+    const min = times.length > 0 ? times[0] : null
+    const max = times.length > 0 ? times[times.length - 1] : null
+    return { gpus, rams, oss, sessionTime: { median, min, max, count: times.length } }
   }
 
   if (loading) return <div style={s.loading}>Loading...</div>
@@ -272,12 +302,20 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
                     </div></div>
                   </div>
                 )}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+                  <div><div style={s.detailLabel}>Session Time at Crash</div>
+                    {hw && hw.sessionTime.median != null ? (
+                      <div style={{ fontSize: '12px', color: '#e7e9ea' }}>
+                        <span style={{ fontWeight: '600' }}>Median: {formatSessionTime(hw.sessionTime.median)}</span>
+                        <span style={{ color: '#71767b' }}> (min {formatSessionTime(hw.sessionTime.min)} — max {formatSessionTime(hw.sessionTime.max)})</span>
+                      </div>
+                    ) : <span style={{ fontSize: '12px', color: '#71767b' }}>-</span>}
+                  </div>
                   <div><div style={s.detailLabel}>Affected Versions</div><div style={s.tagList}>
                     {(group.affected_versions || []).map(v => <span key={v} style={s.tag}>{v}</span>)}
                     {(!group.affected_versions || group.affected_versions.length === 0) && <span style={{ fontSize: '12px', color: '#71767b' }}>-</span>}
                   </div></div>
-                  <div><div style={s.detailLabel}>Time Range</div>
+                  <div><div style={s.detailLabel}>Date Range</div>
                     <div style={{ fontSize: '12px', color: '#e7e9ea' }}>{group.first_seen ? `${formatShortDate(group.first_seen)} — ${formatShortDate(group.last_seen)}` : '-'}</div>
                   </div>
                 </div>
