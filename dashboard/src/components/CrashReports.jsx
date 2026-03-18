@@ -130,7 +130,7 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
                 <div style={{ fontSize: '13px', color: '#e7e9ea', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.title}</div>
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-                <CrashTypeBadge type={g.crash_type || g.category} />
+                <CrashTypeBadge type={g.category || g.crash_type} />
                 <SeverityBadge severity={g.severity} />
                 {g.median_session_time != null && (
                   <span style={{ fontSize: '11px', color: '#71767b' }} title="Median time in session at crash">
@@ -267,7 +267,7 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
             <div style={{ ...s.groupHeader, ...(expandedId === group.id ? { background: '#1a1d21' } : {}) }} onClick={() => toggleGroup(group.id)}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
-                  <CrashTypeBadge type={group.crash_type || group.category} />
+                  <CrashTypeBadge type={group.category || group.crash_type} />
                   <SeverityBadge severity={group.severity} />
                 </div>
                 <div style={s.groupTitle}>{group.title}</div>
@@ -489,7 +489,7 @@ function AllReports({ crashes, loading, onRefresh, onDelete }) {
               <tr style={expandedId === crash.id ? s.expandedRow : s.clickableRow}
                 onClick={() => setExpandedId(expandedId === crash.id ? null : crash.id)}>
                 <td style={s.td}>{formatDate(crash.upload_date)}</td>
-                <td style={s.td}><CrashTypeBadge type={ctx.crash_type || crash.crash_type || 'Unknown'} /></td>
+                <td style={s.td}><CrashTypeBadge type={crash.category || 'Unknown'} /></td>
                 <td style={s.td}><span style={{ fontSize: '12px' }}>{ctx.gpu || crash.gpu || '-'}</span></td>
                 <td style={s.td}>{ctx.ram_gb ? ctx.ram_gb + ' GB' : '-'}</td>
                 <td style={s.td}>{ctx.seconds_since_start != null ? (ctx.seconds_since_start < 60 ? ctx.seconds_since_start + 's' : Math.floor(ctx.seconds_since_start / 60) + 'm') : '-'}</td>
