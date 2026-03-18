@@ -110,3 +110,23 @@ export async function deleteCrash(crashId) {
 export function getCrashDownloadUrl(crashId) {
   return `/api/crashes/${crashId}/download`;
 }
+
+// Reclassify all crashes (clears groups and re-runs AI on each)
+export async function reclassifyCrashes() {
+  return fetchWithAuth('/api/crashes/reclassify', { method: 'POST' });
+}
+
+// Get crash groups
+export async function getCrashGroups() {
+  return fetchWithAuth('/api/crashes/groups');
+}
+
+// Get a specific crash group with its crashes
+export async function getCrashGroup(groupId) {
+  return fetchWithAuth(`/api/crashes/groups/${groupId}`);
+}
+
+// Get crash analytics summary
+export async function getCrashSummary() {
+  return fetchWithAuth('/api/crashes/summary');
+}

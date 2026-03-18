@@ -11,6 +11,22 @@ try {
 } catch (error) {
     console.warn('Sharp not available, image compression disabled:', error.message);
 }
+// Try to load Anthropic SDK for AI crash analysis
+let Anthropic;
+try {
+    Anthropic = require('@anthropic-ai/sdk').default;
+    console.log('Anthropic SDK loaded for AI crash analysis');
+} catch (error) {
+    console.warn('Anthropic SDK not available, AI crash analysis disabled:', error.message);
+}
+// Try to load AdmZip for crash report extraction
+let AdmZip;
+try {
+    AdmZip = require('adm-zip');
+    console.log('AdmZip loaded for crash report extraction');
+} catch (error) {
+    console.warn('AdmZip not available, crash report extraction disabled:', error.message);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -57,6 +73,7 @@ const ANALYTICS_SESSIONS_FILE = path.join(ANALYTICS_DIR, 'sessions.json');
 // Crash reports storage
 const CRASHES_DIR = path.join(STORAGE_DIR, 'crashes');
 const CRASHES_METADATA_FILE = path.join(STORAGE_DIR, 'crashes_metadata.json');
+const CRASH_GROUPS_FILE = path.join(STORAGE_DIR, 'crash_groups.json');
 
 // Ensure storage directories exist
 try {
@@ -105,6 +122,16 @@ try {
 } catch (error) {
     console.error('Failed to initialize crashes metadata file:', error);
     // Non-fatal - crashes is optional
+}
+
+// Initialize crash groups file if it doesn't exist
+try {
+    if (!fs.existsSync(CRASH_GROUPS_FILE)) {
+        fs.writeJsonSync(CRASH_GROUPS_FILE, []);
+        console.log('Crash groups file initialized');
+    }
+} catch (error) {
+    console.error('Failed to initialize crash groups file:', error);
 }
 
 // Helper functions
@@ -222,6 +249,241 @@ function saveCrashesMetadata(metadata) {
     } catch (error) {
         console.error('Error saving crashes metadata:', error);
     }
+}
+
+function loadCrashGroups() {
+    try {
+        return fs.readJsonSync(CRASH_GROUPS_FILE);
+    } catch (error) {
+        console.error('Error loading crash groups:', error);
+        return [];
+    }
+}
+
+function saveCrashGroups(groups) {
+    try {
+        fs.writeJsonSync(CRASH_GROUPS_FILE, groups, { spaces: 2 });
+    } catch (error) {
+        console.error('Error saving crash groups:', error);
+    }
+}
+
+// Extract crash context from UE5 crash report ZIP
+function extractCrashContext(buffer) {
+    if (!AdmZip) return null;
+    try {
+        const zip = new AdmZip(buffer);
+        const entry = zip.getEntry('CrashContext.runtime-xml');
+        if (!entry) return null;
+
+        const xml = entry.getData().toString('utf-8');
+
+        // Simple XML tag extractor (avoids needing an XML parser dependency)
+        const get = (tag) => {
+            const m = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+            return m ? m[1].trim() : '';
+        };
+
+        return {
+            error_message: get('ErrorMessage'),
+            crash_type: get('CrashType'),
+            is_assert: get('IsAssert') === 'true',
+            is_stall: get('IsStall') === 'true',
+            is_oom: get('MemoryStats.bIsOOM') === '1',
+            callstack_hash: get('PCallStackHash'),
+            callstack: get('PCallStack'),
+            cpu: get('Misc.CPUBrand'),
+            gpu: get('Misc.PrimaryGPUBrand'),
+            os: get('Misc.OSVersionMajor'),
+            ram_gb: parseInt(get('MemoryStats.TotalPhysicalGB')) || 0,
+            ram_available_bytes: parseInt(get('MemoryStats.AvailablePhysical')) || 0,
+            vram_used_bytes: parseInt(get('MemoryStats.UsedVirtual')) || 0,
+            engine_version: get('EngineVersion'),
+            build_config: get('BuildConfiguration'),
+            seconds_since_start: parseInt(get('SecondsSinceStart')) || 0,
+            game_name: get('GameName'),
+            locale: get('AppDefaultLocale')
+        };
+    } catch (error) {
+        console.error('Failed to extract crash context:', error.message);
+        return null;
+    }
+}
+
+// Predefined crash categories
+const CRASH_CATEGORIES = [
+    { id: 'GPU_DRIVER', label: 'GPU Driver', description: 'GPU driver crashes, timeouts, or TDR events' },
+    { id: 'OUT_OF_MEMORY', label: 'Out of Memory', description: 'Memory allocation failures or excessive memory usage' },
+    { id: 'SHADER', label: 'Shader', description: 'Shader compilation or execution errors' },
+    { id: 'ACCESS_VIOLATION', label: 'Access Violation', description: 'Null pointer dereferences or invalid memory access' },
+    { id: 'HANG_TIMEOUT', label: 'Hang/Timeout', description: 'Application freezes or unresponsive states' },
+    { id: 'RENDERING', label: 'Rendering', description: 'Rendering pipeline errors not related to shaders or GPU drivers' },
+    { id: 'ASSET_LOADING', label: 'Asset Loading', description: 'Failed to load content, meshes, textures, or other assets' },
+    { id: 'AUDIO', label: 'Audio', description: 'Audio system crashes or errors' },
+    { id: 'PHYSICS', label: 'Physics', description: 'Physics simulation crashes' },
+    { id: 'NETWORKING', label: 'Networking', description: 'Network or HTTP related crashes' },
+    { id: 'PLUGIN', label: 'Plugin', description: 'Third-party plugin crashes' },
+    { id: 'ENGINE', label: 'Engine', description: 'Core Unreal Engine crashes' },
+    { id: 'SAVE_SYSTEM', label: 'Save System', description: 'Save/load related crashes' },
+    { id: 'UI', label: 'UI', description: 'User interface or widget related crashes' },
+    { id: 'OTHER', label: 'Other', description: 'Crashes that don\'t fit other categories' }
+];
+
+const SEVERITY_LEVELS = ['critical', 'high', 'medium', 'low'];
+
+// Parse JSON from AI response (handles markdown code blocks)
+function parseAIJson(responseText) {
+    try {
+        return JSON.parse(responseText);
+    } catch (e) {
+        const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+            return JSON.parse(jsonMatch[1].trim());
+        }
+        throw new Error('Failed to parse AI response as JSON');
+    }
+}
+
+// Classify a single crash using Claude
+async function classifyCrash(crash) {
+    if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
+        return null; // AI not available, skip classification
+    }
+
+    const client = new Anthropic();
+    const ctx = crash.crash_context || {};
+
+    const prompt = `Classify this Unreal Engine 5 crash report from the game "Small Spaces" (an interior design game).
+
+CRASH DATA:
+- Error: ${ctx.error_message || crash.error_message || 'none'}
+- Crash type: ${ctx.crash_type || 'unknown'}
+- Is OOM: ${ctx.is_oom || false}
+- Is Assert: ${ctx.is_assert || false}
+- GPU: ${ctx.gpu || crash.gpu || 'unknown'}
+- CPU: ${ctx.cpu || 'unknown'}
+- OS: ${ctx.os || 'unknown'}
+- RAM: ${ctx.ram_gb || 'unknown'} GB
+- RHI: ${crash.rhi || 'unknown'}
+- Game version: ${crash.version || 'unknown'}
+- Seconds since start: ${ctx.seconds_since_start || 'unknown'}
+- Callstack (top frames):
+${(ctx.callstack || '').split('\n').filter(l => l.trim()).slice(0, 10).join('\n') || 'unavailable'}
+
+CATEGORIES (pick exactly one):
+${CRASH_CATEGORIES.map(c => `- ${c.id}: ${c.description}`).join('\n')}
+
+Return JSON only:
+{
+  "category": "CATEGORY_ID",
+  "severity": "critical|high|medium|low",
+  "root_cause": "Brief root cause (1-2 sentences)",
+  "suggested_fix": "Brief suggested fix for developers (1-2 sentences)",
+  "group_title": "Human-readable title for this crash pattern"
+}`;
+
+    const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        messages: [{ role: 'user', content: prompt }]
+    });
+
+    return parseAIJson(response.content[0].text);
+}
+
+// Classify a crash and assign it to a group (updates metadata files in place)
+async function classifyAndGroupCrash(crashId) {
+    const allCrashes = loadCrashesMetadata();
+    const crash = allCrashes.find(c => c.id === crashId);
+    if (!crash) return;
+
+    const groups = loadCrashGroups();
+    const ctx = crash.crash_context || {};
+
+    // Use callstack hash as the deterministic group key (UE5 computes this)
+    const groupKey = ctx.callstack_hash || `unknown_${crashId}`;
+
+    // Try AI classification for category/severity/description
+    const classification = await classifyCrash(crash);
+
+    // Use AI result if available, otherwise fall back to crash_context data
+    const category = classification
+        ? (CRASH_CATEGORIES.find(c => c.id === classification.category) ? classification.category : 'OTHER')
+        : (ctx.is_oom ? 'OUT_OF_MEMORY' : ctx.is_assert ? 'ACCESS_VIOLATION' : 'OTHER');
+    const severity = classification
+        ? (SEVERITY_LEVELS.includes(classification.severity) ? classification.severity : 'medium')
+        : 'medium';
+
+    // Update crash metadata with classification
+    crash.ai_analysis = {
+        category,
+        severity,
+        root_cause: classification ? classification.root_cause || '' : ctx.error_message || '',
+        suggested_fix: classification ? classification.suggested_fix || '' : '',
+        analyzed_at: new Date().toISOString()
+    };
+
+    // Find or create group by callstack hash
+    let group = groups.find(g => g.group_key === groupKey);
+    const gpuName = ctx.gpu || crash.gpu;
+    const versionName = crash.version;
+    const platformName = crash.platform;
+
+    if (group) {
+        // Add crash to existing group
+        if (!group.crash_ids.includes(crashId)) {
+            group.crash_ids.push(crashId);
+            group.count = group.crash_ids.length;
+            group.last_seen = crash.upload_date;
+            if (gpuName && gpuName !== 'unknown' && !group.affected_gpus.includes(gpuName)) {
+                group.affected_gpus.push(gpuName);
+            }
+            if (versionName && versionName !== 'unknown' && !group.affected_versions.includes(versionName)) {
+                group.affected_versions.push(versionName);
+            }
+            if (platformName && platformName !== 'unknown' && !group.affected_platforms.includes(platformName)) {
+                group.affected_platforms.push(platformName);
+            }
+        }
+        // Update severity if AI found something higher
+        const sevOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+        if ((sevOrder[severity] || 3) < (sevOrder[group.severity] || 3)) {
+            group.severity = severity;
+        }
+    } else {
+        // Create new group
+        const title = classification
+            ? classification.group_title
+            : ctx.error_message
+                ? ctx.error_message.split('\n')[0].slice(0, 120)
+                : `Crash group ${groupKey.slice(0, 8)}`;
+        group = {
+            id: uuidv4(),
+            group_key: groupKey,
+            title,
+            category,
+            severity,
+            root_cause: classification ? classification.root_cause || '' : '',
+            suggested_fix: classification ? classification.suggested_fix || '' : '',
+            error_message: ctx.error_message || crash.error_message || '',
+            crash_ids: [crashId],
+            count: 1,
+            first_seen: crash.upload_date,
+            last_seen: crash.upload_date,
+            affected_gpus: gpuName && gpuName !== 'unknown' ? [gpuName] : [],
+            affected_versions: versionName && versionName !== 'unknown' ? [versionName] : [],
+            affected_platforms: platformName && platformName !== 'unknown' ? [platformName] : []
+        };
+        groups.push(group);
+    }
+
+    crash.group_id = group.id;
+
+    // Persist both
+    saveCrashesMetadata(allCrashes);
+    saveCrashGroups(groups);
+
+    console.log(`Crash ${crashId} classified: ${category}/${severity} -> group "${group.title}" (${group.count} crashes)`);
 }
 
 // API Routes
@@ -1909,28 +2171,49 @@ app.post('/api/crashes', (req, res) => {
         const buffer = Buffer.from(crashData, 'base64');
         fs.writeFileSync(crashPath, buffer);
 
+        // Extract crash context from the ZIP (CrashContext.runtime-xml)
+        const crashContext = extractCrashContext(buffer);
+
         // Parse metadata from the metadata object (sent alongside zip)
         const meta = metadata || {};
 
-        // Save crash metadata
+        // Save crash metadata — prefer extracted data over client-sent metadata
         const crashMetadata = {
             id: crashId,
             filename: originalFilename,
             stored_filename: storedFilename,
             session_id: sessionId || 'unknown',
-            error_message: errorMessage || '',
+            error_message: (crashContext && crashContext.error_message) || errorMessage || '',
             file_size: buffer.length,
             upload_date: new Date().toISOString(),
-            // Game/system info from metadata JSON
+            // Game/system info — prefer extracted, fall back to client metadata
             game: meta.game || 'SmallSpaces',
             version: meta.version || 'unknown',
-            platform: meta.platform || 'unknown',
+            platform: meta.platform || (crashContext && crashContext.os) ? 'Windows' : 'unknown',
             rhi: meta.rhi || 'unknown',
-            gpu: meta.gpu || 'unknown',
+            gpu: (crashContext && crashContext.gpu) || meta.gpu || 'unknown',
             driver: meta.driver || 'unknown',
             steam_appid: meta.steam_appid || '',
             build_id: meta.build_id || '',
-            timestamp_utc: meta.timestamp_utc || ''
+            timestamp_utc: meta.timestamp_utc || '',
+            // Rich data extracted from CrashContext.runtime-xml
+            crash_context: crashContext ? {
+                error_message: crashContext.error_message,
+                crash_type: crashContext.crash_type,
+                is_assert: crashContext.is_assert,
+                is_stall: crashContext.is_stall,
+                is_oom: crashContext.is_oom,
+                callstack_hash: crashContext.callstack_hash,
+                callstack: crashContext.callstack,
+                cpu: crashContext.cpu,
+                gpu: crashContext.gpu,
+                os: crashContext.os,
+                ram_gb: crashContext.ram_gb,
+                engine_version: crashContext.engine_version,
+                build_config: crashContext.build_config,
+                seconds_since_start: crashContext.seconds_since_start,
+                locale: crashContext.locale
+            } : null
         };
 
         const allCrashes = loadCrashesMetadata();
@@ -1939,10 +2222,16 @@ app.post('/api/crashes', (req, res) => {
 
         console.log(`Crash report uploaded: ${originalFilename} (${(buffer.length / 1024).toFixed(1)} KB) - Version: ${crashMetadata.version}, GPU: ${crashMetadata.gpu}`);
 
+        // Respond immediately - don't make the game client wait for AI
         res.json({
             success: true,
             crash_id: crashId,
             message: 'Crash report uploaded successfully'
+        });
+
+        // Auto-classify in background (fire-and-forget)
+        classifyAndGroupCrash(crashId).catch(err => {
+            console.error(`Auto-classification failed for crash ${crashId}:`, err.message);
         });
 
     } catch (error) {
@@ -2055,6 +2344,250 @@ app.delete('/api/crashes/:id', (req, res) => {
     }
 });
 
+// ============================================
+// CRASH ANALYSIS API ENDPOINTS
+// ============================================
+
+// Reclassify all crash reports (clears groups, re-analyzes each crash)
+app.post('/api/crashes/reclassify', async (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
+        return res.status(400).json({ error: 'AI analysis not available (ANTHROPIC_API_KEY not set)' });
+    }
+
+    try {
+        const crashes = loadCrashesMetadata();
+
+        if (crashes.length === 0) {
+            return res.json({ success: true, message: 'No crashes to reclassify', reclassified: 0 });
+        }
+
+        // Clear existing groups and analysis
+        saveCrashGroups([]);
+
+        // Re-extract crash context from ZIPs and clear analysis
+        for (const crash of crashes) {
+            delete crash.ai_analysis;
+            delete crash.group_id;
+            // Re-extract crash context if not present or to refresh
+            if (!crash.crash_context) {
+                const crashPath = path.join(CRASHES_DIR, crash.stored_filename);
+                if (fs.existsSync(crashPath)) {
+                    const buffer = fs.readFileSync(crashPath);
+                    const ctx = extractCrashContext(buffer);
+                    if (ctx) {
+                        crash.crash_context = ctx;
+                        crash.error_message = ctx.error_message || crash.error_message;
+                        crash.gpu = ctx.gpu || crash.gpu;
+                    }
+                }
+            }
+        }
+        saveCrashesMetadata(crashes);
+
+        // Reclassify each crash sequentially
+        let classified = 0;
+        let failed = 0;
+        for (const crash of crashes) {
+            try {
+                await classifyAndGroupCrash(crash.id);
+                classified++;
+            } catch (err) {
+                console.error(`Reclassify failed for ${crash.id}:`, err.message);
+                failed++;
+            }
+        }
+
+        const groups = loadCrashGroups();
+        console.log(`Reclassification complete: ${classified} classified, ${failed} failed, ${groups.length} groups`);
+
+        res.json({
+            success: true,
+            reclassified: classified,
+            failed,
+            groups_count: groups.length
+        });
+
+    } catch (error) {
+        console.error('Reclassify error:', error);
+        res.status(500).json({ error: 'Failed to reclassify crashes: ' + error.message });
+    }
+});
+
+// Get predefined categories
+app.get('/api/crashes/categories', (req, res) => {
+    res.json({ categories: CRASH_CATEGORIES, severity_levels: SEVERITY_LEVELS });
+});
+
+// Get crash groups (admin auth required)
+app.get('/api/crashes/groups', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const groups = loadCrashGroups();
+        // Sort by count (most crashes first), then by severity
+        const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+        groups.sort((a, b) => {
+            if (b.count !== a.count) return b.count - a.count;
+            return (severityOrder[a.severity] || 4) - (severityOrder[b.severity] || 4);
+        });
+
+        res.json({ groups, total: groups.length });
+    } catch (error) {
+        console.error('Crash groups error:', error);
+        res.status(500).json({ error: 'Failed to load crash groups' });
+    }
+});
+
+// Get a specific crash group with its crashes (admin auth required)
+app.get('/api/crashes/groups/:id', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const groupId = req.params.id;
+        const groups = loadCrashGroups();
+        const group = groups.find(g => g.id === groupId);
+
+        if (!group) {
+            return res.status(404).json({ error: 'Crash group not found' });
+        }
+
+        // Get the actual crash reports for this group
+        const allCrashes = loadCrashesMetadata();
+        const groupCrashes = allCrashes.filter(c => group.crash_ids.includes(c.id));
+
+        res.json({ group, crashes: groupCrashes });
+    } catch (error) {
+        console.error('Crash group detail error:', error);
+        res.status(500).json({ error: 'Failed to load crash group' });
+    }
+});
+
+// Get crash analytics summary (admin auth required)
+app.get('/api/crashes/summary', (req, res) => {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    try {
+        const crashes = loadCrashesMetadata();
+        const groups = loadCrashGroups();
+
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+        // Basic stats
+        const totalCrashes = crashes.length;
+        const crashesToday = crashes.filter(c => new Date(c.upload_date) >= today).length;
+        const crashesThisWeek = crashes.filter(c => new Date(c.upload_date) >= weekAgo).length;
+        const totalGroups = groups.length;
+        const classifiedCount = crashes.filter(c => c.ai_analysis).length;
+        const unclassifiedCount = totalCrashes - classifiedCount;
+
+        // By GPU
+        const byGpu = {};
+        crashes.forEach(c => {
+            const gpu = c.gpu || 'unknown';
+            byGpu[gpu] = (byGpu[gpu] || 0) + 1;
+        });
+        const gpuBreakdown = Object.entries(byGpu)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count);
+
+        // By version
+        const byVersion = {};
+        crashes.forEach(c => {
+            const version = c.version || 'unknown';
+            byVersion[version] = (byVersion[version] || 0) + 1;
+        });
+        const versionBreakdown = Object.entries(byVersion)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count);
+
+        // By platform
+        const byPlatform = {};
+        crashes.forEach(c => {
+            const platform = c.platform || 'unknown';
+            byPlatform[platform] = (byPlatform[platform] || 0) + 1;
+        });
+        const platformBreakdown = Object.entries(byPlatform)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count);
+
+        // By category (from AI analysis)
+        const byCategory = {};
+        crashes.forEach(c => {
+            const category = (c.ai_analysis && c.ai_analysis.category) || 'UNANALYZED';
+            byCategory[category] = (byCategory[category] || 0) + 1;
+        });
+        const categoryBreakdown = Object.entries(byCategory)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count);
+
+        // Crashes per day (last 30 days)
+        const crashesPerDay = [];
+        for (let i = 29; i >= 0; i--) {
+            const date = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+            const nextDate = new Date(date.getTime() + 24 * 60 * 60 * 1000);
+            const count = crashes.filter(c => {
+                const d = new Date(c.upload_date);
+                return d >= date && d < nextDate;
+            }).length;
+            crashesPerDay.push({
+                date: date.toISOString().split('T')[0],
+                count
+            });
+        }
+
+        // Top crash group (most affected)
+        const topGroup = groups.length > 0 ? {
+            title: groups.sort((a, b) => b.count - a.count)[0].title,
+            count: groups.sort((a, b) => b.count - a.count)[0].count,
+            severity: groups.sort((a, b) => b.count - a.count)[0].severity
+        } : null;
+
+        res.json({
+            total_crashes: totalCrashes,
+            crashes_today: crashesToday,
+            crashes_this_week: crashesThisWeek,
+            total_groups: totalGroups,
+            classified_count: classifiedCount,
+            unclassified_count: unclassifiedCount,
+            ai_enabled: !!(Anthropic && process.env.ANTHROPIC_API_KEY),
+            top_group: topGroup,
+            gpu_breakdown: gpuBreakdown,
+            version_breakdown: versionBreakdown,
+            platform_breakdown: platformBreakdown,
+            category_breakdown: categoryBreakdown,
+            crashes_per_day: crashesPerDay
+        });
+
+    } catch (error) {
+        console.error('Crash summary error:', error);
+        res.status(500).json({ error: 'Failed to generate crash summary' });
+    }
+});
+
 // Reset/clear all data (development only)
 app.delete('/api/reset', (req, res) => {
     // Only allow reset in development
@@ -2093,6 +2626,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Storage directory: ${STORAGE_DIR}`);
     console.log(`Persistent storage: ${process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'ENABLED' : 'LOCAL'}`);
     console.log(`Sharp compression: ${sharp ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`AI crash analysis: ${Anthropic && process.env.ANTHROPIC_API_KEY ? 'ENABLED' : 'DISABLED (set ANTHROPIC_API_KEY)'}`);
     console.log(`Server ready for connections`);
 });
 
