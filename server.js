@@ -2357,8 +2357,8 @@ app.post('/api/crashes/reclassify', async (req, res) => {
             delete crash.crash_type;
             delete crash.group_id;
             delete crash.ai_analysis;
-            // Re-extract crash context from ZIP if missing
-            if (!crash.crash_context) {
+            // Always re-extract crash context from ZIP on reclassify
+            {
                 const crashPath = path.join(CRASHES_DIR, crash.stored_filename);
                 if (fs.existsSync(crashPath)) {
                     const buffer = fs.readFileSync(crashPath);
