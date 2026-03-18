@@ -2357,10 +2357,6 @@ app.post('/api/crashes/reclassify', async (req, res) => {
         return res.status(403).json({ error: 'Invalid admin key' });
     }
 
-    if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
-        return res.status(400).json({ error: 'AI analysis not available (ANTHROPIC_API_KEY not set)' });
-    }
-
     try {
         const crashes = loadCrashesMetadata();
 
