@@ -332,7 +332,7 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
                       </tr></thead><tbody>
                         {groupCrashes[group.id].map(c => (
                           <tr key={c.id}>
-                            <td style={s.miniTd}>{formatShortDate(c.upload_date)}</td>
+                            <td style={s.miniTd}>{formatShortDate(c.crash_context?.crash_time || c.upload_date)}</td>
                             <td style={s.miniTd}>{c.crash_context?.gpu || c.gpu || '-'}</td>
                             <td style={s.miniTd}>{c.crash_context?.cpu || '-'}</td>
                             <td style={s.miniTd}>{c.crash_context?.ram_gb ? c.crash_context.ram_gb + ' GB' : '-'}</td>
@@ -488,7 +488,7 @@ function AllReports({ crashes, loading, onRefresh, onDelete }) {
             <React.Fragment key={crash.id}>
               <tr style={expandedId === crash.id ? s.expandedRow : s.clickableRow}
                 onClick={() => setExpandedId(expandedId === crash.id ? null : crash.id)}>
-                <td style={s.td}>{formatDate(crash.upload_date)}</td>
+                <td style={s.td}>{formatDate(crash.crash_context?.crash_time || crash.upload_date)}</td>
                 <td style={s.td}><CrashTypeBadge type={crash.category || 'Unknown'} /></td>
                 <td style={s.td}><span style={{ fontSize: '12px' }}>{ctx.gpu || crash.gpu || '-'}</span></td>
                 <td style={s.td}>{ctx.ram_gb ? ctx.ram_gb + ' GB' : '-'}</td>

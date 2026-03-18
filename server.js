@@ -284,6 +284,20 @@ function extractCrashContext(buffer) {
             return m ? m[1].trim() : '';
         };
 
+        // Extract actual crash timestamp from minidump header
+        let crash_time = null;
+        const dmpEntry = zip.getEntry('UEMinidump.dmp');
+        if (dmpEntry) {
+            const dmpData = dmpEntry.getData();
+            // MINIDUMP_HEADER: Signature(4) Version(4) NumberOfStreams(4) StreamDirectoryRva(4) CheckSum(4) TimeDateStamp(4)
+            if (dmpData.length >= 24 && dmpData.toString('ascii', 0, 4) === 'MDMP') {
+                const unixTimestamp = dmpData.readUInt32LE(20);
+                if (unixTimestamp > 0) {
+                    crash_time = new Date(unixTimestamp * 1000).toISOString();
+                }
+            }
+        }
+
         return {
             error_message: get('ErrorMessage'),
             crash_type: get('CrashType'),
@@ -302,7 +316,8 @@ function extractCrashContext(buffer) {
             build_config: get('BuildConfiguration'),
             seconds_since_start: parseInt(get('SecondsSinceStart')) || 0,
             game_name: get('GameName'),
-            locale: get('AppDefaultLocale')
+            locale: get('AppDefaultLocale'),
+            crash_time: crash_time
         };
     } catch (error) {
         console.error('Failed to extract crash context:', error.message);
@@ -400,18 +415,21 @@ function categorizeAndGroupCrash(crashId) {
     crash.category = category;
     crash.crash_type = ctx.crash_type || 'Unknown';
 
-    // Find or create group by callstack hash
+    // Find or create group
     let group = groups.find(g => g.group_key === groupKey);
     const gpuName = ctx.gpu || crash.gpu;
     const versionName = crash.version;
     const platformName = crash.platform;
+    const crashDate = ctx.crash_time || crash.upload_date;
 
     if (group) {
         if (!group.crash_ids.includes(crashId)) {
             group.crash_ids.push(crashId);
             group.count = group.crash_ids.length;
             group.severity = deriveSeverity(group.count);
-            group.last_seen = crash.upload_date;
+            // Update first/last seen using actual crash time
+            if (crashDate < group.first_seen) group.first_seen = crashDate;
+            if (crashDate > group.last_seen) group.last_seen = crashDate;
             if (gpuName && gpuName !== 'unknown' && !group.affected_gpus.includes(gpuName)) {
                 group.affected_gpus.push(gpuName);
             }
@@ -436,8 +454,8 @@ function categorizeAndGroupCrash(crashId) {
             error_message: ctx.error_message || crash.error_message || '',
             crash_ids: [crashId],
             count: 1,
-            first_seen: crash.upload_date,
-            last_seen: crash.upload_date,
+            first_seen: crashDate,
+            last_seen: crashDate,
             affected_gpus: gpuName && gpuName !== 'unknown' ? [gpuName] : [],
             affected_versions: versionName && versionName !== 'unknown' ? [versionName] : [],
             affected_platforms: platformName && platformName !== 'unknown' ? [platformName] : [],
@@ -2494,8 +2512,9 @@ app.get('/api/crashes/summary', (req, res) => {
 
         // Basic stats
         const totalCrashes = crashes.length;
-        const crashesToday = crashes.filter(c => new Date(c.upload_date) >= today).length;
-        const crashesThisWeek = crashes.filter(c => new Date(c.upload_date) >= weekAgo).length;
+        const getCrashTime = (c) => new Date((c.crash_context && c.crash_context.crash_time) || c.upload_date);
+        const crashesToday = crashes.filter(c => getCrashTime(c) >= today).length;
+        const crashesThisWeek = crashes.filter(c => getCrashTime(c) >= weekAgo).length;
         const totalGroups = groups.length;
 
         // Helper: count by field
@@ -2585,13 +2604,24 @@ app.get('/api/crashes/summary', (req, res) => {
             { label: '30min+', count: sessionTimes.filter(c => c.crash_context.seconds_since_start > 1800).length }
         ];
 
-        // Crashes per day (last 30 days)
+        // Crashes per day — use actual crash time from minidump, fall back to upload_date
+        const getCrashDate = (c) => {
+            const ct = c.crash_context && c.crash_context.crash_time;
+            return new Date(ct || c.upload_date);
+        };
+
+        // Determine timeline range from actual crash dates
+        const allCrashDates = crashes.map(getCrashDate).filter(d => !isNaN(d));
+        const earliestCrash = allCrashDates.length > 0 ? new Date(Math.min(...allCrashDates)) : today;
+        const timelineStart = new Date(Math.min(earliestCrash.getTime(), today.getTime() - 29 * 24 * 60 * 60 * 1000));
+        const dayCount = Math.ceil((today.getTime() - timelineStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+
         const crashesPerDay = [];
-        for (let i = 29; i >= 0; i--) {
+        for (let i = dayCount - 1; i >= 0; i--) {
             const date = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
             const nextDate = new Date(date.getTime() + 24 * 60 * 60 * 1000);
             const count = crashes.filter(c => {
-                const d = new Date(c.upload_date);
+                const d = getCrashDate(c);
                 return d >= date && d < nextDate;
             }).length;
             crashesPerDay.push({ date: date.toISOString().split('T')[0], count });
