@@ -431,7 +431,7 @@ function categorizeAndGroupCrash(crashId) {
             group_key: groupKey,
             title,
             category,
-            crash_type: crashType,
+            crash_type: ctx.crash_type || 'Unknown',
             severity: 'low',
             error_message: ctx.error_message || crash.error_message || '',
             crash_ids: [crashId],
