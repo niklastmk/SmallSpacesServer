@@ -310,26 +310,23 @@ function extractCrashContext(buffer) {
     }
 }
 
-// Predefined crash categories
-const CRASH_CATEGORIES = [
-    { id: 'GPU_DRIVER', label: 'GPU Driver', description: 'GPU driver crashes, timeouts, or TDR events' },
-    { id: 'OUT_OF_MEMORY', label: 'Out of Memory', description: 'Memory allocation failures or excessive memory usage' },
-    { id: 'SHADER', label: 'Shader', description: 'Shader compilation or execution errors' },
-    { id: 'ACCESS_VIOLATION', label: 'Access Violation', description: 'Null pointer dereferences or invalid memory access' },
-    { id: 'HANG_TIMEOUT', label: 'Hang/Timeout', description: 'Application freezes or unresponsive states' },
-    { id: 'RENDERING', label: 'Rendering', description: 'Rendering pipeline errors not related to shaders or GPU drivers' },
-    { id: 'ASSET_LOADING', label: 'Asset Loading', description: 'Failed to load content, meshes, textures, or other assets' },
-    { id: 'AUDIO', label: 'Audio', description: 'Audio system crashes or errors' },
-    { id: 'PHYSICS', label: 'Physics', description: 'Physics simulation crashes' },
-    { id: 'NETWORKING', label: 'Networking', description: 'Network or HTTP related crashes' },
-    { id: 'PLUGIN', label: 'Plugin', description: 'Third-party plugin crashes' },
-    { id: 'ENGINE', label: 'Engine', description: 'Core Unreal Engine crashes' },
-    { id: 'SAVE_SYSTEM', label: 'Save System', description: 'Save/load related crashes' },
-    { id: 'UI', label: 'UI', description: 'User interface or widget related crashes' },
-    { id: 'OTHER', label: 'Other', description: 'Crashes that don\'t fit other categories' }
-];
+// Map UE5 crash_type directly to category — no AI needed
+const CRASH_TYPE_MAP = {
+    'OutOfMemory': 'OutOfMemory',
+    'Assert': 'Assert',
+    'Ensure': 'Ensure',
+    'Hang': 'Hang',
+    'GPUCrash': 'GPUCrash',
+    'Crash': 'Crash'
+};
 
-const SEVERITY_LEVELS = ['critical', 'high', 'medium', 'low'];
+// Derive severity from group crash count
+function deriveSeverity(count) {
+    if (count >= 10) return 'critical';
+    if (count >= 5) return 'high';
+    if (count >= 2) return 'medium';
+    return 'low';
+}
 
 // Parse JSON from AI response (handles markdown code blocks)
 function parseAIJson(responseText) {
@@ -344,55 +341,8 @@ function parseAIJson(responseText) {
     }
 }
 
-// Classify a single crash using Claude
-async function classifyCrash(crash) {
-    if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
-        return null; // AI not available, skip classification
-    }
-
-    const client = new Anthropic();
-    const ctx = crash.crash_context || {};
-
-    const prompt = `Classify this Unreal Engine 5 crash report from the game "Small Spaces" (an interior design game).
-
-CRASH DATA:
-- Error: ${ctx.error_message || crash.error_message || 'none'}
-- Crash type: ${ctx.crash_type || 'unknown'}
-- Is OOM: ${ctx.is_oom || false}
-- Is Assert: ${ctx.is_assert || false}
-- GPU: ${ctx.gpu || crash.gpu || 'unknown'}
-- CPU: ${ctx.cpu || 'unknown'}
-- OS: ${ctx.os || 'unknown'}
-- RAM: ${ctx.ram_gb || 'unknown'} GB
-- RHI: ${crash.rhi || 'unknown'}
-- Game version: ${crash.version || 'unknown'}
-- Seconds since start: ${ctx.seconds_since_start || 'unknown'}
-- Callstack (top frames):
-${(ctx.callstack || '').split('\n').filter(l => l.trim()).slice(0, 10).join('\n') || 'unavailable'}
-
-CATEGORIES (pick exactly one):
-${CRASH_CATEGORIES.map(c => `- ${c.id}: ${c.description}`).join('\n')}
-
-Return JSON only:
-{
-  "category": "CATEGORY_ID",
-  "severity": "critical|high|medium|low",
-  "root_cause": "Brief root cause (1-2 sentences)",
-  "suggested_fix": "Brief suggested fix for developers (1-2 sentences)",
-  "group_title": "Human-readable title for this crash pattern"
-}`;
-
-    const response = await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 512,
-        messages: [{ role: 'user', content: prompt }]
-    });
-
-    return parseAIJson(response.content[0].text);
-}
-
-// Classify a crash and assign it to a group (updates metadata files in place)
-async function classifyAndGroupCrash(crashId) {
+// Categorize and group a crash (no AI, instant, deterministic)
+function categorizeAndGroupCrash(crashId) {
     const allCrashes = loadCrashesMetadata();
     const crash = allCrashes.find(c => c.id === crashId);
     if (!crash) return;
@@ -400,28 +350,16 @@ async function classifyAndGroupCrash(crashId) {
     const groups = loadCrashGroups();
     const ctx = crash.crash_context || {};
 
-    // Use callstack hash as the deterministic group key (UE5 computes this)
+    // Use callstack hash as the deterministic group key
     const groupKey = ctx.callstack_hash || `unknown_${crashId}`;
 
-    // Try AI classification for category/severity/description
-    const classification = await classifyCrash(crash);
+    // Category directly from UE5 crash_type
+    const crashType = ctx.crash_type || 'Unknown';
+    const category = CRASH_TYPE_MAP[crashType] || 'Other';
 
-    // Use AI result if available, otherwise fall back to crash_context data
-    const category = classification
-        ? (CRASH_CATEGORIES.find(c => c.id === classification.category) ? classification.category : 'OTHER')
-        : (ctx.is_oom ? 'OUT_OF_MEMORY' : ctx.is_assert ? 'ACCESS_VIOLATION' : 'OTHER');
-    const severity = classification
-        ? (SEVERITY_LEVELS.includes(classification.severity) ? classification.severity : 'medium')
-        : 'medium';
-
-    // Update crash metadata with classification
-    crash.ai_analysis = {
-        category,
-        severity,
-        root_cause: classification ? classification.root_cause || '' : ctx.error_message || '',
-        suggested_fix: classification ? classification.suggested_fix || '' : '',
-        analyzed_at: new Date().toISOString()
-    };
+    // Store classification on crash
+    crash.category = category;
+    crash.crash_type = crashType;
 
     // Find or create group by callstack hash
     let group = groups.find(g => g.group_key === groupKey);
@@ -430,10 +368,10 @@ async function classifyAndGroupCrash(crashId) {
     const platformName = crash.platform;
 
     if (group) {
-        // Add crash to existing group
         if (!group.crash_ids.includes(crashId)) {
             group.crash_ids.push(crashId);
             group.count = group.crash_ids.length;
+            group.severity = deriveSeverity(group.count);
             group.last_seen = crash.upload_date;
             if (gpuName && gpuName !== 'unknown' && !group.affected_gpus.includes(gpuName)) {
                 group.affected_gpus.push(gpuName);
@@ -445,26 +383,17 @@ async function classifyAndGroupCrash(crashId) {
                 group.affected_platforms.push(platformName);
             }
         }
-        // Update severity if AI found something higher
-        const sevOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-        if ((sevOrder[severity] || 3) < (sevOrder[group.severity] || 3)) {
-            group.severity = severity;
-        }
     } else {
-        // Create new group
-        const title = classification
-            ? classification.group_title
-            : ctx.error_message
-                ? ctx.error_message.split('\n')[0].slice(0, 120)
-                : `Crash group ${groupKey.slice(0, 8)}`;
+        const title = ctx.error_message
+            ? ctx.error_message.split('\n')[0].slice(0, 120)
+            : `Crash group ${groupKey.slice(0, 8)}`;
         group = {
             id: uuidv4(),
             group_key: groupKey,
             title,
             category,
-            severity,
-            root_cause: classification ? classification.root_cause || '' : '',
-            suggested_fix: classification ? classification.suggested_fix || '' : '',
+            crash_type: crashType,
+            severity: 'low',
             error_message: ctx.error_message || crash.error_message || '',
             crash_ids: [crashId],
             count: 1,
@@ -472,18 +401,20 @@ async function classifyAndGroupCrash(crashId) {
             last_seen: crash.upload_date,
             affected_gpus: gpuName && gpuName !== 'unknown' ? [gpuName] : [],
             affected_versions: versionName && versionName !== 'unknown' ? [versionName] : [],
-            affected_platforms: platformName && platformName !== 'unknown' ? [platformName] : []
+            affected_platforms: platformName && platformName !== 'unknown' ? [platformName] : [],
+            // AI fields - populated on demand
+            ai_root_cause: '',
+            ai_suggested_fix: ''
         };
         groups.push(group);
     }
 
     crash.group_id = group.id;
 
-    // Persist both
     saveCrashesMetadata(allCrashes);
     saveCrashGroups(groups);
 
-    console.log(`Crash ${crashId} classified: ${category}/${severity} -> group "${group.title}" (${group.count} crashes)`);
+    console.log(`Crash ${crashId} -> ${category} -> group "${group.title}" (${group.count} crashes)`);
 }
 
 // API Routes
@@ -2222,16 +2153,13 @@ app.post('/api/crashes', (req, res) => {
 
         console.log(`Crash report uploaded: ${originalFilename} (${(buffer.length / 1024).toFixed(1)} KB) - Version: ${crashMetadata.version}, GPU: ${crashMetadata.gpu}`);
 
-        // Respond immediately - don't make the game client wait for AI
+        // Categorize and group immediately (instant, no AI)
+        categorizeAndGroupCrash(crashId);
+
         res.json({
             success: true,
             crash_id: crashId,
             message: 'Crash report uploaded successfully'
-        });
-
-        // Auto-classify in background (fire-and-forget)
-        classifyAndGroupCrash(crashId).catch(err => {
-            console.error(`Auto-classification failed for crash ${crashId}:`, err.message);
         });
 
     } catch (error) {
@@ -2364,14 +2292,14 @@ app.post('/api/crashes/reclassify', async (req, res) => {
             return res.json({ success: true, message: 'No crashes to reclassify', reclassified: 0 });
         }
 
-        // Clear existing groups and analysis
+        // Clear existing groups and classification
         saveCrashGroups([]);
-
-        // Re-extract crash context from ZIPs and clear analysis
         for (const crash of crashes) {
-            delete crash.ai_analysis;
+            delete crash.category;
+            delete crash.crash_type;
             delete crash.group_id;
-            // Re-extract crash context if not present or to refresh
+            delete crash.ai_analysis;
+            // Re-extract crash context from ZIP if missing
             if (!crash.crash_context) {
                 const crashPath = path.join(CRASHES_DIR, crash.stored_filename);
                 if (fs.existsSync(crashPath)) {
@@ -2387,27 +2315,60 @@ app.post('/api/crashes/reclassify', async (req, res) => {
         }
         saveCrashesMetadata(crashes);
 
-        // Reclassify each crash sequentially
+        // Re-categorize and group each crash (instant, no AI)
         let classified = 0;
-        let failed = 0;
         for (const crash of crashes) {
-            try {
-                await classifyAndGroupCrash(crash.id);
-                classified++;
-            } catch (err) {
-                console.error(`Reclassify failed for ${crash.id}:`, err.message);
-                failed++;
-            }
+            categorizeAndGroupCrash(crash.id);
+            classified++;
         }
 
-        const groups = loadCrashGroups();
-        console.log(`Reclassification complete: ${classified} classified, ${failed} failed, ${groups.length} groups`);
+        // Optional: AI-enrich group descriptions if API key is available
+        let aiEnriched = 0;
+        if (Anthropic && process.env.ANTHROPIC_API_KEY) {
+            const groups = loadCrashGroups();
+            const client = new Anthropic();
+            for (const group of groups) {
+                try {
+                    const ctx = crashes.find(c => c.id === group.crash_ids[0])?.crash_context || {};
+                    const prompt = `You are analyzing a crash group from the UE5 game "Small Spaces" (interior design game).
+
+Crash type: ${group.crash_type || group.category}
+Error: ${group.error_message || 'unknown'}
+Affected GPUs: ${group.affected_gpus.join(', ') || 'various'}
+Crash count: ${group.count}
+Callstack (top frames):
+${(ctx.callstack || '').split('\n').filter(l => l.trim()).slice(0, 8).join('\n') || 'unavailable'}
+
+In 1-2 sentences each, provide:
+1. root_cause: What is likely causing this crash?
+2. suggested_fix: What should the developers do?
+
+Return JSON only: {"root_cause": "...", "suggested_fix": "..."}`;
+
+                    const response = await client.messages.create({
+                        model: 'claude-haiku-4-5-20251001',
+                        max_tokens: 256,
+                        messages: [{ role: 'user', content: prompt }]
+                    });
+                    const result = parseAIJson(response.content[0].text);
+                    group.ai_root_cause = result.root_cause || '';
+                    group.ai_suggested_fix = result.suggested_fix || '';
+                    aiEnriched++;
+                } catch (err) {
+                    console.error(`AI enrichment failed for group ${group.id}:`, err.message);
+                }
+            }
+            saveCrashGroups(groups);
+        }
+
+        const finalGroups = loadCrashGroups();
+        console.log(`Reclassification complete: ${classified} crashes, ${finalGroups.length} groups, ${aiEnriched} AI-enriched`);
 
         res.json({
             success: true,
             reclassified: classified,
-            failed,
-            groups_count: groups.length
+            groups_count: finalGroups.length,
+            ai_enriched: aiEnriched
         });
 
     } catch (error) {
@@ -2416,9 +2377,9 @@ app.post('/api/crashes/reclassify', async (req, res) => {
     }
 });
 
-// Get predefined categories
+// Get crash type definitions
 app.get('/api/crashes/categories', (req, res) => {
-    res.json({ categories: CRASH_CATEGORIES, severity_levels: SEVERITY_LEVELS });
+    res.json({ crash_types: CRASH_TYPE_MAP });
 });
 
 // Get crash groups (admin auth required)
@@ -2497,48 +2458,63 @@ app.get('/api/crashes/summary', (req, res) => {
         const crashesToday = crashes.filter(c => new Date(c.upload_date) >= today).length;
         const crashesThisWeek = crashes.filter(c => new Date(c.upload_date) >= weekAgo).length;
         const totalGroups = groups.length;
-        const classifiedCount = crashes.filter(c => c.ai_analysis).length;
-        const unclassifiedCount = totalCrashes - classifiedCount;
 
-        // By GPU
-        const byGpu = {};
-        crashes.forEach(c => {
-            const gpu = c.gpu || 'unknown';
-            byGpu[gpu] = (byGpu[gpu] || 0) + 1;
-        });
-        const gpuBreakdown = Object.entries(byGpu)
-            .map(([name, count]) => ({ name, count }))
-            .sort((a, b) => b.count - a.count);
+        // Helper: count by field
+        const countBy = (arr, fn) => {
+            const map = {};
+            arr.forEach(item => { const key = fn(item); map[key] = (map[key] || 0) + 1; });
+            return Object.entries(map).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+        };
+
+        // By crash type (from UE5 directly)
+        const crashTypeBreakdown = countBy(crashes, c => (c.crash_context && c.crash_context.crash_type) || c.crash_type || 'Unknown');
+
+        // By GPU (prefer extracted)
+        const gpuBreakdown = countBy(crashes, c => (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown');
+
+        // By RAM
+        const ramBreakdown = countBy(
+            crashes.filter(c => c.crash_context && c.crash_context.ram_gb),
+            c => c.crash_context.ram_gb + ' GB'
+        );
+
+        // By OS (simplified)
+        const osBreakdown = countBy(
+            crashes.filter(c => c.crash_context && c.crash_context.os),
+            c => {
+                const os = c.crash_context.os;
+                if (os.includes('Windows 11')) return 'Windows 11';
+                if (os.includes('Windows 10')) return 'Windows 10';
+                return os.split('[')[0].trim();
+            }
+        );
 
         // By version
-        const byVersion = {};
-        crashes.forEach(c => {
-            const version = c.version || 'unknown';
-            byVersion[version] = (byVersion[version] || 0) + 1;
-        });
-        const versionBreakdown = Object.entries(byVersion)
-            .map(([name, count]) => ({ name, count }))
-            .sort((a, b) => b.count - a.count);
+        const versionBreakdown = countBy(crashes, c => c.version || 'unknown');
 
-        // By platform
-        const byPlatform = {};
+        // Hardware cross-reference: crash type by GPU
+        const crashTypeByGpu = {};
         crashes.forEach(c => {
-            const platform = c.platform || 'unknown';
-            byPlatform[platform] = (byPlatform[platform] || 0) + 1;
+            const gpu = (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown';
+            const ct = (c.crash_context && c.crash_context.crash_type) || c.crash_type || 'Unknown';
+            if (!crashTypeByGpu[gpu]) crashTypeByGpu[gpu] = {};
+            crashTypeByGpu[gpu][ct] = (crashTypeByGpu[gpu][ct] || 0) + 1;
         });
-        const platformBreakdown = Object.entries(byPlatform)
-            .map(([name, count]) => ({ name, count }))
-            .sort((a, b) => b.count - a.count);
 
-        // By category (from AI analysis)
-        const byCategory = {};
-        crashes.forEach(c => {
-            const category = (c.ai_analysis && c.ai_analysis.category) || 'UNANALYZED';
-            byCategory[category] = (byCategory[category] || 0) + 1;
-        });
-        const categoryBreakdown = Object.entries(byCategory)
-            .map(([name, count]) => ({ name, count }))
-            .sort((a, b) => b.count - a.count);
+        // OOM details: RAM breakdown for OOM crashes specifically
+        const oomCrashes = crashes.filter(c => c.crash_context && c.crash_context.is_oom);
+        const oomByRam = countBy(oomCrashes.filter(c => c.crash_context.ram_gb), c => c.crash_context.ram_gb + ' GB');
+        const oomByGpu = countBy(oomCrashes, c => (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown');
+
+        // Time-in-session distribution
+        const sessionTimes = crashes.filter(c => c.crash_context && c.crash_context.seconds_since_start != null);
+        const timeDistribution = [
+            { label: '0-10s (startup)', count: sessionTimes.filter(c => c.crash_context.seconds_since_start <= 10).length },
+            { label: '10-60s', count: sessionTimes.filter(c => { const t = c.crash_context.seconds_since_start; return t > 10 && t <= 60; }).length },
+            { label: '1-5min', count: sessionTimes.filter(c => { const t = c.crash_context.seconds_since_start; return t > 60 && t <= 300; }).length },
+            { label: '5-30min', count: sessionTimes.filter(c => { const t = c.crash_context.seconds_since_start; return t > 300 && t <= 1800; }).length },
+            { label: '30min+', count: sessionTimes.filter(c => c.crash_context.seconds_since_start > 1800).length }
+        ];
 
         // Crashes per day (last 30 days)
         const crashesPerDay = [];
@@ -2549,32 +2525,34 @@ app.get('/api/crashes/summary', (req, res) => {
                 const d = new Date(c.upload_date);
                 return d >= date && d < nextDate;
             }).length;
-            crashesPerDay.push({
-                date: date.toISOString().split('T')[0],
-                count
-            });
+            crashesPerDay.push({ date: date.toISOString().split('T')[0], count });
         }
 
-        // Top crash group (most affected)
-        const topGroup = groups.length > 0 ? {
-            title: groups.sort((a, b) => b.count - a.count)[0].title,
-            count: groups.sort((a, b) => b.count - a.count)[0].count,
-            severity: groups.sort((a, b) => b.count - a.count)[0].severity
-        } : null;
+        // Top crash groups
+        const sortedGroups = [...groups].sort((a, b) => b.count - a.count);
+        const topGroups = sortedGroups.slice(0, 5).map(g => ({
+            title: g.title,
+            count: g.count,
+            severity: g.severity,
+            category: g.category,
+            crash_type: g.crash_type
+        }));
 
         res.json({
             total_crashes: totalCrashes,
             crashes_today: crashesToday,
             crashes_this_week: crashesThisWeek,
             total_groups: totalGroups,
-            classified_count: classifiedCount,
-            unclassified_count: unclassifiedCount,
-            ai_enabled: !!(Anthropic && process.env.ANTHROPIC_API_KEY),
-            top_group: topGroup,
+            top_groups: topGroups,
+            crash_type_breakdown: crashTypeBreakdown,
             gpu_breakdown: gpuBreakdown,
+            ram_breakdown: ramBreakdown,
+            os_breakdown: osBreakdown,
             version_breakdown: versionBreakdown,
-            platform_breakdown: platformBreakdown,
-            category_breakdown: categoryBreakdown,
+            crash_type_by_gpu: crashTypeByGpu,
+            oom_by_ram: oomByRam,
+            oom_by_gpu: oomByGpu,
+            time_distribution: timeDistribution,
             crashes_per_day: crashesPerDay
         });
 
