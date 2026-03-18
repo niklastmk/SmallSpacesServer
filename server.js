@@ -2552,6 +2552,7 @@ app.get('/api/crashes/summary', (req, res) => {
         // Top crash groups
         const sortedGroups = [...groups].sort((a, b) => b.count - a.count);
         const topGroups = sortedGroups.slice(0, 5).map(g => ({
+            id: g.id,
             title: g.title,
             count: g.count,
             severity: g.severity,

@@ -78,7 +78,7 @@ function SeverityBadge({ severity }) {
 // ============================================
 // OVERVIEW
 // ============================================
-function CrashOverview({ summary, loading }) {
+function CrashOverview({ summary, loading, onNavigateToGroup }) {
   if (loading) return <div style={s.loading}>Loading...</div>
   if (!summary || summary.total_crashes === 0) {
     return <div style={s.emptyState}><div style={s.emptyTitle}>No crash reports yet</div></div>
@@ -98,7 +98,10 @@ function CrashOverview({ summary, loading }) {
         <div style={{ marginBottom: '20px' }}>
           <div style={s.chartTitle}>Top Issues</div>
           {summary.top_groups.map((g, i) => (
-            <div key={i} style={s.topGroupCard}>
+            <div key={i} style={{ ...s.topGroupCard, cursor: 'pointer', transition: 'background 0.15s' }}
+              onClick={() => onNavigateToGroup && onNavigateToGroup(g.id)}
+              onMouseEnter={e => e.currentTarget.style.background = '#22262b'}
+              onMouseLeave={e => e.currentTarget.style.background = '#1a1d21'}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '13px', color: '#e7e9ea', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.title}</div>
               </div>
@@ -106,6 +109,7 @@ function CrashOverview({ summary, loading }) {
                 <CrashTypeBadge type={g.crash_type || g.category} />
                 <SeverityBadge severity={g.severity} />
                 <span style={{ fontSize: '14px', fontWeight: '700', color: '#e7e9ea', minWidth: '24px', textAlign: 'right' }}>{g.count}</span>
+                <span style={{ fontSize: '11px', color: '#71767b' }}>→</span>
               </div>
             </div>
           ))}
@@ -176,8 +180,13 @@ function CrashOverview({ summary, loading }) {
 // ============================================
 // GROUPS
 // ============================================
-function CrashGroupsView({ groups, loading, crashes }) {
-  const [expandedId, setExpandedId] = useState(null)
+function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
+  const [expandedId, setExpandedId] = useState(initialExpandedId || null)
+
+  // React to external navigation
+  useEffect(() => {
+    if (initialExpandedId) setExpandedId(initialExpandedId)
+  }, [initialExpandedId])
   const [groupCrashes, setGroupCrashes] = useState({})
   const [loadingGroup, setLoadingGroup] = useState(null)
 
@@ -490,6 +499,12 @@ function CrashReports() {
   const [loading, setLoading] = useState(true)
   const [reclassifying, setReclassifying] = useState(false)
   const [error, setError] = useState(null)
+  const [focusedGroupId, setFocusedGroupId] = useState(null)
+
+  const navigateToGroup = (groupId) => {
+    setFocusedGroupId(groupId)
+    setTab('groups')
+  }
 
   const fetchAll = async () => {
     try {
@@ -542,8 +557,8 @@ function CrashReports() {
         </div>
       </div>
       {error && <div style={s.error}>{error}</div>}
-      {tab === 'overview' && <CrashOverview summary={summary} loading={loading} />}
-      {tab === 'groups' && <CrashGroupsView groups={groups} loading={loading} crashes={crashes} />}
+      {tab === 'overview' && <CrashOverview summary={summary} loading={loading} onNavigateToGroup={navigateToGroup} />}
+      {tab === 'groups' && <CrashGroupsView groups={groups} loading={loading} crashes={crashes} initialExpandedId={focusedGroupId} />}
       {tab === 'hardware' && <HardwareView summary={summary} loading={loading} />}
       {tab === 'reports' && <AllReports crashes={crashes} loading={loading} onRefresh={fetchAll} onDelete={handleDelete} />}
     </div>
