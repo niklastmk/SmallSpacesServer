@@ -639,11 +639,20 @@ const TIME_RANGES = [
   { id: '7d', label: '7 days', ms: 7 * 24 * 60 * 60 * 1000 },
   { id: '30d', label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
   { id: '90d', label: '90 days', ms: 90 * 24 * 60 * 60 * 1000 },
+  { id: 'custom', label: 'Custom' },
 ]
+
+const dateInputStyle = {
+  background: '#1a1d21', border: '1px solid #2f3336', borderRadius: '6px',
+  color: '#e7e9ea', padding: '4px 8px', fontSize: '12px', fontFamily: 'inherit',
+  outline: 'none', cursor: 'pointer', colorScheme: 'dark'
+}
 
 function CrashReports() {
   const [tab, setTab] = useState('overview')
   const [timeRange, setTimeRange] = useState('all')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [hardwareFilter, setHardwareFilter] = useState(null) // { type: 'gpu'|'cpu'|'ram'|'os', value: string }
   const [crashes, setCrashes] = useState([])
   const [groups, setGroups] = useState([])
@@ -665,8 +674,13 @@ function CrashReports() {
 
   const getFilters = () => {
     const filters = {}
-    const range = TIME_RANGES.find(r => r.id === timeRange)
-    if (range && range.ms) filters.from = new Date(Date.now() - range.ms).toISOString()
+    if (timeRange === 'custom') {
+      if (customFrom) filters.from = new Date(customFrom).toISOString()
+      if (customTo) filters.to = customTo
+    } else {
+      const range = TIME_RANGES.find(r => r.id === timeRange)
+      if (range && range.ms) filters.from = new Date(Date.now() - range.ms).toISOString()
+    }
     if (hardwareFilter) filters[hardwareFilter.type] = hardwareFilter.value
     return filters
   }
@@ -682,7 +696,13 @@ function CrashReports() {
     } catch (err) { setError(err.message) }
     finally { setLoading(false) }
   }
-  useEffect(() => { fetchAll() }, [timeRange, hardwareFilter])
+  useEffect(() => {
+    if (timeRange !== 'custom') fetchAll()
+  }, [timeRange, hardwareFilter])
+  // For custom range, fetch when dates change (debounced by requiring both)
+  useEffect(() => {
+    if (timeRange === 'custom' && (customFrom || customTo)) fetchAll()
+  }, [customFrom, customTo])
 
   const handleReclassify = async () => {
     if (!confirm('Re-extract and re-categorize all crash reports?')) return
@@ -716,7 +736,7 @@ function CrashReports() {
               </button>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: '2px', background: '#1a1d21', borderRadius: '8px', padding: '3px', border: '1px solid #2f3336' }}>
+          <div style={{ display: 'flex', gap: '2px', background: '#1a1d21', borderRadius: '8px', padding: '3px', border: '1px solid #2f3336', alignItems: 'center' }}>
             {TIME_RANGES.map(r => (
               <button key={r.id} style={{
                 background: timeRange === r.id ? '#2f3336' : 'transparent',
@@ -724,6 +744,15 @@ function CrashReports() {
                 padding: '4px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: '500', borderRadius: '6px'
               }} onClick={() => setTimeRange(r.id)}>{r.label}</button>
             ))}
+            {timeRange === 'custom' && (
+              <>
+                <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                  style={dateInputStyle} max={customTo || undefined} />
+                <span style={{ color: '#71767b', fontSize: '12px', padding: '0 2px' }}>—</span>
+                <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                  style={dateInputStyle} min={customFrom || undefined} />
+              </>
+            )}
           </div>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>

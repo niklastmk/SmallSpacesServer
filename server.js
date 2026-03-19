@@ -401,12 +401,22 @@ function getCrashDateForReport(c) {
     return new Date((c.crash_context && c.crash_context.crash_time) || c.upload_date);
 }
 
-// Filter crashes by a 'from' date string (ISO or ms timestamp)
-function filterCrashesByDate(crashes, from) {
-    if (!from) return crashes;
-    const fromDate = new Date(from);
-    if (isNaN(fromDate)) return crashes;
-    return crashes.filter(c => getCrashDateForReport(c) >= fromDate);
+// Filter crashes by date range
+function filterCrashesByDate(crashes, from, to) {
+    let result = crashes;
+    if (from) {
+        const fromDate = new Date(from);
+        if (!isNaN(fromDate)) result = result.filter(c => getCrashDateForReport(c) >= fromDate);
+    }
+    if (to) {
+        const toDate = new Date(to);
+        if (!isNaN(toDate)) {
+            // Set to end of day
+            toDate.setHours(23, 59, 59, 999);
+            result = result.filter(c => getCrashDateForReport(c) <= toDate);
+        }
+    }
+    return result;
 }
 
 // Filter crashes by hardware properties
@@ -436,7 +446,7 @@ function filterCrashesByHardware(crashes, query) {
 
 // Apply both date and hardware filters from a request's query params
 function applyFilters(crashes, query) {
-    let result = filterCrashesByDate(crashes, query.from);
+    let result = filterCrashesByDate(crashes, query.from, query.to);
     return filterCrashesByHardware(result, query);
 }
 
@@ -2500,7 +2510,7 @@ app.get('/api/crashes/groups', (req, res) => {
         const allCrashes = loadCrashesMetadata();
         const filteredCrashes = applyFilters(allCrashes, req.query);
         const filteredIds = new Set(filteredCrashes.map(c => c.id));
-        const hasFilters = req.query.from || req.query.gpu || req.query.cpu || req.query.ram || req.query.os;
+        const hasFilters = req.query.from || req.query.to || req.query.gpu || req.query.cpu || req.query.ram || req.query.os;
         const now = new Date();
         const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);

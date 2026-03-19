@@ -97,9 +97,10 @@ export async function getEventBreakdown(eventName, propertyName = null) {
 // ============================================
 
 // Build query string from filter object
-function buildFilterParams({ from, gpu, cpu, ram, os } = {}) {
+function buildFilterParams({ from, to, gpu, cpu, ram, os } = {}) {
   const params = new URLSearchParams();
   if (from) params.set('from', from);
+  if (to) params.set('to', to);
   if (gpu) params.set('gpu', gpu);
   if (cpu) params.set('cpu', cpu);
   if (ram) params.set('ram', ram);
