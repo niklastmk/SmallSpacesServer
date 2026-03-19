@@ -249,6 +249,79 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
 }
 
 // ============================================
+// GROUP CRASHES TABLE (expandable + downloadable)
+// ============================================
+function GroupCrashesTable({ crashes, count, loading: isLoading }) {
+  const [expandedCrashId, setExpandedCrashId] = useState(null)
+  const handleDownload = (crashId, filename) => {
+    const adminKey = getAdminKey()
+    fetch(`/api/crashes/${crashId}/download`, { headers: { 'x-admin-key': adminKey } })
+      .then(r => r.blob()).then(blob => {
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a'); a.href = url; a.download = filename
+        document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url)
+      }).catch(err => alert('Download failed: ' + err.message))
+  }
+
+  return (
+    <div>
+      <div style={s.detailLabel}>Crashes ({count})</div>
+      {isLoading ? <div style={{ color: '#71767b', fontSize: '12px' }}>Loading...</div> :
+        crashes ? (
+          <table style={s.miniTable}><thead><tr>
+            <th style={s.miniTh}>Date</th><th style={s.miniTh}>GPU</th><th style={s.miniTh}>CPU</th>
+            <th style={s.miniTh}>RAM</th><th style={s.miniTh}>OS</th><th style={s.miniTh}>Session</th><th style={s.miniTh}></th>
+          </tr></thead><tbody>
+            {crashes.map(c => {
+              const ctx = c.crash_context || {}
+              return (
+                <React.Fragment key={c.id}>
+                  <tr style={{ cursor: 'pointer', ...(expandedCrashId === c.id ? { background: '#1a1d21' } : {}) }}
+                    onClick={() => setExpandedCrashId(expandedCrashId === c.id ? null : c.id)}>
+                    <td style={s.miniTd}>{formatShortDate(ctx.crash_time || c.upload_date)}</td>
+                    <td style={s.miniTd}>{ctx.gpu || c.gpu || '-'}</td>
+                    <td style={s.miniTd}>{ctx.cpu || '-'}</td>
+                    <td style={s.miniTd}>{ctx.ram_gb ? ctx.ram_gb + ' GB' : '-'}</td>
+                    <td style={s.miniTd}>{ctx.os ? ctx.os.split('[')[0].trim() : '-'}</td>
+                    <td style={s.miniTd}>{ctx.seconds_since_start != null ? (ctx.seconds_since_start < 60 ? ctx.seconds_since_start + 's' : Math.floor(ctx.seconds_since_start / 60) + 'm') : '-'}</td>
+                    <td style={s.miniTd} onClick={e => e.stopPropagation()}>
+                      <button style={{ ...s.actionBtn, fontSize: '11px', padding: '2px 6px' }} onClick={() => handleDownload(c.id, c.filename)}>DL</button>
+                    </td>
+                  </tr>
+                  {expandedCrashId === c.id && (
+                    <tr><td colSpan="7" style={{ ...s.detailsCell, padding: '12px' }}><div style={s.detailsGrid}>
+                      {(ctx.error_message || c.error_message) && (
+                        <div style={{ ...s.detailItem, gridColumn: '1 / -1' }}>
+                          <div style={s.detailItemLabel}>Error Message</div>
+                          <div style={{ ...s.detailItemValue, color: '#ff6b6b', fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap' }}>{ctx.error_message || c.error_message}</div>
+                        </div>
+                      )}
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>GPU</div><div style={s.detailItemValue}>{ctx.gpu || c.gpu || '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>CPU</div><div style={s.detailItemValue}>{ctx.cpu || '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>OS</div><div style={s.detailItemValue}>{ctx.os || '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>RAM</div><div style={s.detailItemValue}>{ctx.ram_gb ? ctx.ram_gb + ' GB' : '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>RHI</div><div style={s.detailItemValue}>{c.rhi || '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>Version</div><div style={s.detailItemValue}>{c.version || '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>Callstack Hash</div><div style={{ ...s.detailItemValue, fontFamily: 'monospace', fontSize: '11px' }}>{ctx.callstack_hash || '-'}</div></div>
+                      <div style={s.detailItem}><div style={s.detailItemLabel}>Build ID</div><div style={s.detailItemValue}>{c.build_id || '-'}</div></div>
+                      {ctx.callstack && (
+                        <div style={{ ...s.detailItem, gridColumn: '1 / -1' }}>
+                          <div style={s.detailItemLabel}>Callstack</div>
+                          <div style={{ ...s.detailItemValue, fontFamily: 'monospace', fontSize: '11px', whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>{ctx.callstack}</div>
+                        </div>
+                      )}
+                    </div></td></tr>
+                  )}
+                </React.Fragment>
+              )
+            })}
+          </tbody></table>
+        ) : null}
+    </div>
+  )
+}
+
+// ============================================
 // GROUPS
 // ============================================
 function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardwareFilter, onHardwareFilter, filters }) {
@@ -313,9 +386,6 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardware
           <div style={{ fontSize: '13px', color: '#71767b' }}>
             {groups.length} unique issue{groups.length !== 1 ? 's' : ''} from {crashes.length} crash{crashes.length !== 1 ? 'es' : ''}
           </div>
-          {hardwareFilter && (
-            <FilterChip label={`${hardwareFilter.type.toUpperCase()}: ${hardwareFilter.value}`} onRemove={() => onHardwareFilter(null)} />
-          )}
         </div>
         <div style={{ display: 'flex', gap: '4px', background: '#1a1d21', borderRadius: '6px', padding: '2px', border: '1px solid #2f3336' }}>
           <button style={{ ...s.subTab, fontSize: '11px', padding: '4px 10px', ...(sortBy === 'recent' ? { background: '#2f3336', color: '#e7e9ea' } : {}) }}
@@ -403,26 +473,7 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardware
                     {group.crashes_last_30d > 0 && group.crashes_last_30d !== group.crashes_last_7d && <div style={{ fontSize: '11px', color: '#d97706', marginTop: '2px' }}>{group.crashes_last_30d} in last 30 days</div>}
                   </div>
                 </div>
-                <div><div style={s.detailLabel}>Crashes ({group.count})</div>
-                  {loadingGroup === group.id ? <div style={{ color: '#71767b', fontSize: '12px' }}>Loading...</div> :
-                    groupCrashes[group.id] ? (
-                      <table style={s.miniTable}><thead><tr>
-                        <th style={s.miniTh}>Date</th><th style={s.miniTh}>GPU</th><th style={s.miniTh}>CPU</th>
-                        <th style={s.miniTh}>RAM</th><th style={s.miniTh}>OS</th><th style={s.miniTh}>Session</th>
-                      </tr></thead><tbody>
-                        {groupCrashes[group.id].map(c => (
-                          <tr key={c.id}>
-                            <td style={s.miniTd}>{formatShortDate(c.crash_context?.crash_time || c.upload_date)}</td>
-                            <td style={s.miniTd}>{c.crash_context?.gpu || c.gpu || '-'}</td>
-                            <td style={s.miniTd}>{c.crash_context?.cpu || '-'}</td>
-                            <td style={s.miniTd}>{c.crash_context?.ram_gb ? c.crash_context.ram_gb + ' GB' : '-'}</td>
-                            <td style={s.miniTd}>{c.crash_context?.os ? c.crash_context.os.split('[')[0].trim() : '-'}</td>
-                            <td style={s.miniTd}>{c.crash_context?.seconds_since_start != null ? (c.crash_context.seconds_since_start < 60 ? c.crash_context.seconds_since_start + 's' : Math.floor(c.crash_context.seconds_since_start / 60) + 'm') : '-'}</td>
-                          </tr>
-                        ))}
-                      </tbody></table>
-                    ) : null}
-                </div>
+                <GroupCrashesTable crashes={groupCrashes[group.id]} count={group.count} loading={loadingGroup === group.id} />
               </div>
             )}
           </div>
@@ -670,6 +721,7 @@ function CrashReports() {
 
   const handleHardwareFilter = (filter) => {
     setHardwareFilter(filter)
+    if (filter) setTab('groups')
   }
 
   const getFilters = () => {
