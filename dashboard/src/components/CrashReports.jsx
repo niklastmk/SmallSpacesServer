@@ -276,8 +276,10 @@ function GroupCrashesTable({ crashes, count, loading: isLoading }) {
               const ctx = c.crash_context || {}
               return (
                 <React.Fragment key={c.id}>
-                  <tr style={{ cursor: 'pointer', ...(expandedCrashId === c.id ? { background: '#1a1d21' } : {}) }}
-                    onClick={() => setExpandedCrashId(expandedCrashId === c.id ? null : c.id)}>
+                  <tr style={{ cursor: 'pointer', transition: 'background 0.1s', ...(expandedCrashId === c.id ? { background: '#1a1d21' } : {}) }}
+                    onClick={() => setExpandedCrashId(expandedCrashId === c.id ? null : c.id)}
+                    onMouseEnter={e => { if (expandedCrashId !== c.id) e.currentTarget.style.background = '#1e2126' }}
+                    onMouseLeave={e => { if (expandedCrashId !== c.id) e.currentTarget.style.background = '' }}>
                     <td style={s.miniTd}>{formatShortDate(ctx.crash_time || c.upload_date)}</td>
                     <td style={s.miniTd}>{ctx.gpu || c.gpu || '-'}</td>
                     <td style={s.miniTd}>{ctx.cpu || '-'}</td>
@@ -285,7 +287,14 @@ function GroupCrashesTable({ crashes, count, loading: isLoading }) {
                     <td style={s.miniTd}>{ctx.os ? ctx.os.split('[')[0].trim() : '-'}</td>
                     <td style={s.miniTd}>{ctx.seconds_since_start != null ? (ctx.seconds_since_start < 60 ? ctx.seconds_since_start + 's' : Math.floor(ctx.seconds_since_start / 60) + 'm') : '-'}</td>
                     <td style={s.miniTd} onClick={e => e.stopPropagation()}>
-                      <button style={{ ...s.actionBtn, fontSize: '11px', padding: '2px 6px' }} onClick={() => handleDownload(c.id, c.filename)}>DL</button>
+                      <button onClick={() => handleDownload(c.id, c.filename)} title="Download crash report"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', color: '#71767b', fontSize: '14px', lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#1d9bf0'}
+                        onMouseLeave={e => e.currentTarget.style.color = '#71767b'}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                      </button>
                     </td>
                   </tr>
                   {expandedCrashId === c.id && (
@@ -335,8 +344,9 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardware
   const [groupCrashes, setGroupCrashes] = useState({})
   const [loadingGroup, setLoadingGroup] = useState(null)
 
-  // Clear cached group crashes when filters change
-  useEffect(() => { setGroupCrashes({}) }, [hardwareFilter, filters?.from])
+  // Clear cached group crashes when filters actually change
+  const filterKey = JSON.stringify(filters)
+  useEffect(() => { setGroupCrashes({}) }, [filterKey])
 
   const toggleGroup = async (groupId) => {
     if (expandedId === groupId) { setExpandedId(null); return }
