@@ -97,8 +97,11 @@ export async function getEventBreakdown(eventName, propertyName = null) {
 // ============================================
 
 // Get all crash reports
-export async function getCrashes() {
-  return fetchWithAuth('/api/crashes');
+export async function getCrashes({ from } = {}) {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  const qs = params.toString();
+  return fetchWithAuth(`/api/crashes${qs ? '?' + qs : ''}`);
 }
 
 // Delete a crash report
@@ -117,8 +120,11 @@ export async function reclassifyCrashes() {
 }
 
 // Get crash groups
-export async function getCrashGroups() {
-  return fetchWithAuth('/api/crashes/groups');
+export async function getCrashGroups({ from } = {}) {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  const qs = params.toString();
+  return fetchWithAuth(`/api/crashes/groups${qs ? '?' + qs : ''}`);
 }
 
 // Get a specific crash group with its crashes
@@ -127,6 +133,9 @@ export async function getCrashGroup(groupId) {
 }
 
 // Get crash analytics summary
-export async function getCrashSummary() {
-  return fetchWithAuth('/api/crashes/summary');
+export async function getCrashSummary({ from } = {}) {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  const qs = params.toString();
+  return fetchWithAuth(`/api/crashes/summary${qs ? '?' + qs : ''}`);
 }

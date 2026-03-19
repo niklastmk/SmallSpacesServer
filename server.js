@@ -396,6 +396,19 @@ function parseAIJson(responseText) {
     }
 }
 
+// Get the actual crash date (prefer minidump timestamp over upload date)
+function getCrashDateForReport(c) {
+    return new Date((c.crash_context && c.crash_context.crash_time) || c.upload_date);
+}
+
+// Filter crashes by a 'from' date string (ISO or ms timestamp)
+function filterCrashesByDate(crashes, from) {
+    if (!from) return crashes;
+    const fromDate = new Date(from);
+    if (isNaN(fromDate)) return crashes;
+    return crashes.filter(c => getCrashDateForReport(c) >= fromDate);
+}
+
 // Categorize and group a crash (no AI, instant, deterministic)
 function categorizeAndGroupCrash(crashId) {
     const allCrashes = loadCrashesMetadata();
@@ -2200,7 +2213,8 @@ app.post('/api/crashes', (req, res) => {
                 engine_version: crashContext.engine_version,
                 build_config: crashContext.build_config,
                 seconds_since_start: crashContext.seconds_since_start,
-                locale: crashContext.locale
+                locale: crashContext.locale,
+                crash_time: crashContext.crash_time
             } : null
         };
 
@@ -2235,10 +2249,11 @@ app.get('/api/crashes', (req, res) => {
     }
 
     try {
-        const crashes = loadCrashesMetadata();
+        let crashes = loadCrashesMetadata();
+        crashes = filterCrashesByDate(crashes, req.query.from);
 
-        // Sort by upload date (newest first)
-        crashes.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+        // Sort by crash date (newest first)
+        crashes.sort((a, b) => getCrashDateForReport(b) - getCrashDateForReport(a));
 
         res.json({
             crashes: crashes,
@@ -2450,12 +2465,32 @@ app.get('/api/crashes/groups', (req, res) => {
     }
 
     try {
-        const groups = loadCrashGroups();
-        // Sort by count (most crashes first), then by severity
-        const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+        let groups = loadCrashGroups();
+        const allCrashes = loadCrashesMetadata();
+        const filteredCrashes = filterCrashesByDate(allCrashes, req.query.from);
+        const filteredIds = new Set(filteredCrashes.map(c => c.id));
+        const now = new Date();
+        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+        // Enrich groups with recency data and filter by time range
+        groups = groups.map(group => {
+            const groupCrashes = allCrashes.filter(c => group.crash_ids.includes(c.id));
+            const filteredGroupCrashes = groupCrashes.filter(c => filteredIds.has(c.id));
+            return {
+                ...group,
+                crashes_last_7d: groupCrashes.filter(c => getCrashDateForReport(c) >= weekAgo).length,
+                crashes_last_30d: groupCrashes.filter(c => getCrashDateForReport(c) >= monthAgo).length,
+                filtered_count: filteredGroupCrashes.length
+            };
+        }).filter(g => req.query.from ? g.filtered_count > 0 : true);
+
+        // Sort by last_seen (most recent first), then by count
         groups.sort((a, b) => {
-            if (b.count !== a.count) return b.count - a.count;
-            return (severityOrder[a.severity] || 4) - (severityOrder[b.severity] || 4);
+            const aLast = new Date(a.last_seen || 0);
+            const bLast = new Date(b.last_seen || 0);
+            if (bLast.getTime() !== aLast.getTime()) return bLast - aLast;
+            return b.count - a.count;
         });
 
         res.json({ groups, total: groups.length });
@@ -2504,7 +2539,8 @@ app.get('/api/crashes/summary', (req, res) => {
     }
 
     try {
-        const crashes = loadCrashesMetadata();
+        let crashes = loadCrashesMetadata();
+        crashes = filterCrashesByDate(crashes, req.query.from);
         const groups = loadCrashGroups();
 
         const now = new Date();
@@ -2628,12 +2664,19 @@ app.get('/api/crashes/summary', (req, res) => {
             crashesPerDay.push({ date: date.toISOString().split('T')[0], count });
         }
 
-        // Top crash groups — enriched with session time stats
-        const sortedGroups = [...groups].sort((a, b) => b.count - a.count);
+        // Top crash groups — sorted by relevance (recent crashes weighted 3x)
+        const sortedGroups = [...groups].sort((a, b) => {
+            const aRecent = a.crash_ids.filter(id => { const c = crashes.find(cr => cr.id === id); return c && getCrashDate(c) >= weekAgo; }).length;
+            const bRecent = b.crash_ids.filter(id => { const c = crashes.find(cr => cr.id === id); return c && getCrashDate(c) >= weekAgo; }).length;
+            const aScore = aRecent * 3 + a.count;
+            const bScore = bRecent * 3 + b.count;
+            return bScore - aScore;
+        });
         const topGroups = sortedGroups.slice(0, 5).map(g => {
             const groupCrashes = crashes.filter(c => g.crash_ids.includes(c.id));
             const times = groupCrashes.map(c => c.crash_context && c.crash_context.seconds_since_start).filter(t => t != null).sort((a, b) => a - b);
             const medianTime = times.length > 0 ? times[Math.floor(times.length / 2)] : null;
+            const recentCount = groupCrashes.filter(c => getCrashDate(c) >= weekAgo).length;
             return {
                 id: g.id,
                 title: g.title,
@@ -2641,7 +2684,9 @@ app.get('/api/crashes/summary', (req, res) => {
                 severity: g.severity,
                 category: g.category,
                 crash_type: g.crash_type,
-                median_session_time: medianTime
+                median_session_time: medianTime,
+                crashes_last_7d: recentCount,
+                last_seen: g.last_seen
             };
         });
 

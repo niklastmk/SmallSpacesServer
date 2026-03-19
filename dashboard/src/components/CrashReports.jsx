@@ -78,6 +78,22 @@ function formatSessionTime(seconds) {
   return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm'
 }
 
+function formatRelativeTime(dateStr) {
+  if (!dateStr) return '-'
+  const now = new Date()
+  const d = new Date(dateStr)
+  const diffMs = now - d
+  const diffMin = Math.floor(diffMs / 60000)
+  const diffHr = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return diffMin + 'm ago'
+  if (diffHr < 24) return diffHr + 'h ago'
+  if (diffDays < 30) return diffDays + 'd ago'
+  if (diffDays < 365) return Math.floor(diffDays / 30) + 'mo ago'
+  return Math.floor(diffDays / 365) + 'y ago'
+}
+
 function CrashTypeTooltip({ active, payload }) {
   if (!active || !payload || !payload[0]) return null
   const d = payload[0].payload
@@ -121,27 +137,31 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
       {summary.top_groups && summary.top_groups.length > 0 && (
         <div style={{ marginBottom: '20px' }}>
           <div style={s.chartTitle}>Top Issues</div>
-          {summary.top_groups.map((g, i) => (
-            <div key={i} style={{ ...s.topGroupCard, cursor: 'pointer', transition: 'background 0.15s' }}
-              onClick={() => onNavigateToGroup && onNavigateToGroup(g.id)}
-              onMouseEnter={e => e.currentTarget.style.background = '#22262b'}
-              onMouseLeave={e => e.currentTarget.style.background = '#1a1d21'}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: '13px', color: '#e7e9ea', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.title}</div>
-              </div>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-                <CrashTypeBadge type={g.category || g.crash_type} />
-                <SeverityBadge severity={g.severity} />
-                {g.median_session_time != null && (
-                  <span style={{ fontSize: '11px', color: '#71767b' }} title="Median time in session at crash">
-                    {formatSessionTime(g.median_session_time)}
+          {summary.top_groups.map((g, i) => {
+            const isActive = g.crashes_last_7d > 0
+            const recencyColor = isActive ? '#ef4444' : '#3b82f6'
+            return (
+              <div key={i} style={{ ...s.topGroupCard, cursor: 'pointer', transition: 'background 0.15s', opacity: isActive ? 1 : 0.55 }}
+                onClick={() => onNavigateToGroup && onNavigateToGroup(g.id)}
+                onMouseEnter={e => { e.currentTarget.style.background = '#22262b'; e.currentTarget.style.opacity = '1' }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#1a1d21'; e.currentTarget.style.opacity = isActive ? '1' : '0.55' }}>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: recencyColor, flexShrink: 0 }} title={isActive ? 'Active this week' : 'No crashes this week'} />
+                  <div style={{ fontSize: '13px', color: '#e7e9ea', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.title}</div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+                  <CrashTypeBadge type={g.category || g.crash_type} />
+                  {g.last_seen && <span style={{ fontSize: '11px', color: '#71767b' }}>{formatRelativeTime(g.last_seen)}</span>}
+                  <span style={{ fontSize: '13px', color: '#71767b', minWidth: '70px', textAlign: 'right' }}>
+                    {g.crashes_last_7d > 0 && <span style={{ color: recencyColor, fontWeight: '600' }}>{g.crashes_last_7d} this wk</span>}
+                    {g.crashes_last_7d > 0 && g.crashes_last_7d < g.count && <span style={{ color: '#71767b' }}> / </span>}
+                    {(g.crashes_last_7d === 0 || g.crashes_last_7d < g.count) && <span>{g.count} total</span>}
                   </span>
-                )}
-                <span style={{ fontSize: '14px', fontWeight: '700', color: '#e7e9ea', minWidth: '24px', textAlign: 'right' }}>{g.count}</span>
-                <span style={{ fontSize: '11px', color: '#71767b' }}>→</span>
+                  <span style={{ fontSize: '11px', color: '#71767b' }}>→</span>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -211,6 +231,7 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
 // ============================================
 function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
   const [expandedId, setExpandedId] = useState(initialExpandedId || null)
+  const [sortBy, setSortBy] = useState('recent') // 'recent' or 'count'
 
   // React to external navigation
   useEffect(() => {
@@ -255,20 +276,41 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
   if (loading) return <div style={s.loading}>Loading...</div>
   if (!groups || groups.length === 0) return <div style={s.emptyState}><div style={s.emptyTitle}>No crash groups yet</div></div>
 
+  const sortedGroups = [...groups].sort((a, b) => {
+    if (sortBy === 'count') return b.count - a.count
+    return new Date(b.last_seen || 0) - new Date(a.last_seen || 0)
+  })
+
   return (
     <div>
-      <div style={{ fontSize: '13px', color: '#71767b', marginBottom: '16px' }}>
-        {groups.length} unique issue{groups.length !== 1 ? 's' : ''} from {crashes.length} crash{crashes.length !== 1 ? 'es' : ''}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <div style={{ fontSize: '13px', color: '#71767b' }}>
+          {groups.length} unique issue{groups.length !== 1 ? 's' : ''} from {crashes.length} crash{crashes.length !== 1 ? 'es' : ''}
+        </div>
+        <div style={{ display: 'flex', gap: '4px', background: '#1a1d21', borderRadius: '6px', padding: '2px', border: '1px solid #2f3336' }}>
+          <button style={{ ...s.subTab, fontSize: '11px', padding: '4px 10px', ...(sortBy === 'recent' ? { background: '#2f3336', color: '#e7e9ea' } : {}) }}
+            onClick={() => setSortBy('recent')}>Most Recent</button>
+          <button style={{ ...s.subTab, fontSize: '11px', padding: '4px 10px', ...(sortBy === 'count' ? { background: '#2f3336', color: '#e7e9ea' } : {}) }}
+            onClick={() => setSortBy('count')}>Most Frequent</button>
+        </div>
       </div>
-      {groups.map(group => {
+      {sortedGroups.map(group => {
         const hw = groupCrashes[group.id] ? getHardwareBreakdown(groupCrashes[group.id]) : null
+        const lastSeenMs = group.last_seen ? Date.now() - new Date(group.last_seen).getTime() : Infinity
+        const isActive = lastSeenMs < 7 * 86400000
+        const isRecent = lastSeenMs < 30 * 86400000
+        const isStale = !isRecent
+        const dotColor = isActive ? '#ef4444' : isRecent ? '#d97706' : '#3b82f6'
         return (
-          <div key={group.id} style={s.groupCard}>
+          <div key={group.id} style={{ ...s.groupCard, opacity: isStale && expandedId !== group.id ? 0.5 : 1, transition: 'opacity 0.2s' }}>
             <div style={{ ...s.groupHeader, ...(expandedId === group.id ? { background: '#1a1d21' } : {}) }} onClick={() => toggleGroup(group.id)}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: dotColor, flexShrink: 0 }}
+                    title={isActive ? 'Active (last 7 days)' : isRecent ? 'Recent (last 30 days)' : 'Stale (30+ days)'} />
                   <CrashTypeBadge type={group.category || group.crash_type} />
                   <SeverityBadge severity={group.severity} />
+                  {group.last_seen && <span style={{ fontSize: '11px', color: '#71767b' }}>last seen {formatRelativeTime(group.last_seen)}</span>}
                 </div>
                 <div style={s.groupTitle}>{group.title}</div>
                 {group.affected_gpus?.length > 0 && (
@@ -276,7 +318,10 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
                 )}
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-                <div style={s.countBadge}>{group.count}</div>
+                <div style={{ textAlign: 'right', lineHeight: '1.3' }}>
+                  {group.crashes_last_7d > 0 && <div style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>{group.crashes_last_7d} this week</div>}
+                  <div style={{ fontSize: group.crashes_last_7d > 0 ? '11px' : '13px', color: group.crashes_last_7d > 0 ? '#71767b' : '#e7e9ea', fontWeight: '600' }}>{group.count} total</div>
+                </div>
                 <span style={{ fontSize: '11px', color: '#71767b', transform: expandedId === group.id ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
               </div>
             </div>
@@ -320,7 +365,12 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
                     {(!group.affected_versions || group.affected_versions.length === 0) && <span style={{ fontSize: '12px', color: '#71767b' }}>-</span>}
                   </div></div>
                   <div><div style={s.detailLabel}>Date Range</div>
-                    <div style={{ fontSize: '12px', color: '#e7e9ea' }}>{group.first_seen ? `${formatShortDate(group.first_seen)} — ${formatShortDate(group.last_seen)}` : '-'}</div>
+                    <div style={{ fontSize: '12px', color: '#e7e9ea' }}>
+                      {group.first_seen ? `${formatShortDate(group.first_seen)} — ${formatShortDate(group.last_seen)}` : '-'}
+                      {group.last_seen && <span style={{ color: '#71767b', marginLeft: '6px' }}>({formatRelativeTime(group.last_seen)})</span>}
+                    </div>
+                    {group.crashes_last_7d > 0 && <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px' }}>{group.crashes_last_7d} in last 7 days</div>}
+                    {group.crashes_last_30d > 0 && group.crashes_last_30d !== group.crashes_last_7d && <div style={{ fontSize: '11px', color: '#d97706', marginTop: '2px' }}>{group.crashes_last_30d} in last 30 days</div>}
                   </div>
                 </div>
                 <div><div style={s.detailLabel}>Crashes ({group.count})</div>
@@ -533,8 +583,17 @@ function AllReports({ crashes, loading, onRefresh, onDelete }) {
 // ============================================
 // MAIN
 // ============================================
+const TIME_RANGES = [
+  { id: 'all', label: 'All Time' },
+  { id: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { id: '7d', label: '7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: '30d', label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: '90d', label: '90 days', ms: 90 * 24 * 60 * 60 * 1000 },
+]
+
 function CrashReports() {
   const [tab, setTab] = useState('overview')
+  const [timeRange, setTimeRange] = useState('all')
   const [crashes, setCrashes] = useState([])
   const [groups, setGroups] = useState([])
   const [summary, setSummary] = useState(null)
@@ -548,17 +607,24 @@ function CrashReports() {
     setTab('groups')
   }
 
+  const getFromDate = () => {
+    const range = TIME_RANGES.find(r => r.id === timeRange)
+    if (!range || !range.ms) return undefined
+    return new Date(Date.now() - range.ms).toISOString()
+  }
+
   const fetchAll = async () => {
     try {
       setLoading(true); setError(null)
+      const from = getFromDate()
       const [cd, gd, sd] = await Promise.all([
-        getCrashes(), getCrashGroups().catch(() => ({ groups: [] })), getCrashSummary().catch(() => null)
+        getCrashes({ from }), getCrashGroups({ from }).catch(() => ({ groups: [] })), getCrashSummary({ from }).catch(() => null)
       ])
       setCrashes(cd.crashes || []); setGroups(gd.groups || []); setSummary(sd)
     } catch (err) { setError(err.message) }
     finally { setLoading(false) }
   }
-  useEffect(() => { fetchAll() }, [])
+  useEffect(() => { fetchAll() }, [timeRange])
 
   const handleReclassify = async () => {
     if (!confirm('Re-extract and re-categorize all crash reports?')) return
@@ -583,13 +649,24 @@ function CrashReports() {
   return (
     <div style={s.container}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-        <div style={s.subTabs}>
-          {tabs.map(t => (
-            <button key={t.id} style={{ ...s.subTab, ...(tab === t.id ? s.subTabActive : {}) }} onClick={() => setTab(t.id)}>
-              {t.label}
-              {t.count > 0 && <span style={{ marginLeft: '6px', background: tab === t.id ? 'rgba(255,255,255,0.2)' : '#2f3336', padding: '1px 6px', borderRadius: '10px', fontSize: '11px' }}>{t.count}</span>}
-            </button>
-          ))}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={s.subTabs}>
+            {tabs.map(t => (
+              <button key={t.id} style={{ ...s.subTab, ...(tab === t.id ? s.subTabActive : {}) }} onClick={() => setTab(t.id)}>
+                {t.label}
+                {t.count > 0 && <span style={{ marginLeft: '6px', background: tab === t.id ? 'rgba(255,255,255,0.2)' : '#2f3336', padding: '1px 6px', borderRadius: '10px', fontSize: '11px' }}>{t.count}</span>}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: '2px', background: '#1a1d21', borderRadius: '8px', padding: '3px', border: '1px solid #2f3336' }}>
+            {TIME_RANGES.map(r => (
+              <button key={r.id} style={{
+                background: timeRange === r.id ? '#2f3336' : 'transparent',
+                border: 'none', color: timeRange === r.id ? '#e7e9ea' : '#71767b',
+                padding: '4px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: '500', borderRadius: '6px'
+              }} onClick={() => setTimeRange(r.id)}>{r.label}</button>
+            ))}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button style={s.refreshBtn} onClick={fetchAll}>Refresh</button>
