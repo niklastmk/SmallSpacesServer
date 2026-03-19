@@ -409,6 +409,37 @@ function filterCrashesByDate(crashes, from) {
     return crashes.filter(c => getCrashDateForReport(c) >= fromDate);
 }
 
+// Filter crashes by hardware properties
+function filterCrashesByHardware(crashes, query) {
+    let result = crashes;
+    if (query.gpu) {
+        result = result.filter(c => ((c.crash_context && c.crash_context.gpu) || c.gpu || '') === query.gpu);
+    }
+    if (query.cpu) {
+        result = result.filter(c => (c.crash_context && c.crash_context.cpu || '') === query.cpu);
+    }
+    if (query.ram) {
+        const ramGb = parseInt(query.ram);
+        if (!isNaN(ramGb)) result = result.filter(c => c.crash_context && c.crash_context.ram_gb === ramGb);
+    }
+    if (query.os) {
+        result = result.filter(c => {
+            if (!c.crash_context || !c.crash_context.os) return false;
+            const os = c.crash_context.os;
+            if (query.os === 'Windows 11') return os.includes('Windows 11');
+            if (query.os === 'Windows 10') return os.includes('Windows 10');
+            return os.includes(query.os);
+        });
+    }
+    return result;
+}
+
+// Apply both date and hardware filters from a request's query params
+function applyFilters(crashes, query) {
+    let result = filterCrashesByDate(crashes, query.from);
+    return filterCrashesByHardware(result, query);
+}
+
 // Categorize and group a crash (no AI, instant, deterministic)
 function categorizeAndGroupCrash(crashId) {
     const allCrashes = loadCrashesMetadata();
@@ -2250,7 +2281,7 @@ app.get('/api/crashes', (req, res) => {
 
     try {
         let crashes = loadCrashesMetadata();
-        crashes = filterCrashesByDate(crashes, req.query.from);
+        crashes = applyFilters(crashes, req.query);
 
         // Sort by crash date (newest first)
         crashes.sort((a, b) => getCrashDateForReport(b) - getCrashDateForReport(a));
@@ -2467,13 +2498,14 @@ app.get('/api/crashes/groups', (req, res) => {
     try {
         let groups = loadCrashGroups();
         const allCrashes = loadCrashesMetadata();
-        const filteredCrashes = filterCrashesByDate(allCrashes, req.query.from);
+        const filteredCrashes = applyFilters(allCrashes, req.query);
         const filteredIds = new Set(filteredCrashes.map(c => c.id));
+        const hasFilters = req.query.from || req.query.gpu || req.query.cpu || req.query.ram || req.query.os;
         const now = new Date();
         const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-        // Enrich groups with recency data and filter by time range
+        // Enrich groups with recency data and filter
         groups = groups.map(group => {
             const groupCrashes = allCrashes.filter(c => group.crash_ids.includes(c.id));
             const filteredGroupCrashes = groupCrashes.filter(c => filteredIds.has(c.id));
@@ -2483,7 +2515,7 @@ app.get('/api/crashes/groups', (req, res) => {
                 crashes_last_30d: groupCrashes.filter(c => getCrashDateForReport(c) >= monthAgo).length,
                 filtered_count: filteredGroupCrashes.length
             };
-        }).filter(g => req.query.from ? g.filtered_count > 0 : true);
+        }).filter(g => hasFilters ? g.filtered_count > 0 : true);
 
         // Sort by last_seen (most recent first), then by count
         groups.sort((a, b) => {
@@ -2518,9 +2550,10 @@ app.get('/api/crashes/groups/:id', (req, res) => {
             return res.status(404).json({ error: 'Crash group not found' });
         }
 
-        // Get the actual crash reports for this group
+        // Get the actual crash reports for this group, applying filters
         const allCrashes = loadCrashesMetadata();
-        const groupCrashes = allCrashes.filter(c => group.crash_ids.includes(c.id));
+        let groupCrashes = allCrashes.filter(c => group.crash_ids.includes(c.id));
+        groupCrashes = applyFilters(groupCrashes, req.query);
 
         res.json({ group, crashes: groupCrashes });
     } catch (error) {
@@ -2540,7 +2573,7 @@ app.get('/api/crashes/summary', (req, res) => {
 
     try {
         let crashes = loadCrashesMetadata();
-        crashes = filterCrashesByDate(crashes, req.query.from);
+        crashes = applyFilters(crashes, req.query);
         const groups = loadCrashGroups();
 
         const now = new Date();
@@ -2594,17 +2627,49 @@ app.get('/api/crashes/summary', (req, res) => {
             })
             .sort((a, b) => b.count - a.count);
 
+        // Enriched hardware breakdown helper — adds top crash types and session time per item
+        const enrichedCountBy = (arr, keyFn) => {
+            const map = {};
+            arr.forEach(item => {
+                const key = keyFn(item);
+                if (!map[key]) map[key] = { items: [] };
+                map[key].items.push(item);
+            });
+            return Object.entries(map).map(([name, { items }]) => {
+                const types = {};
+                const times = [];
+                items.forEach(c => {
+                    const cat = c.category || deriveCategory(c.crash_context || {});
+                    types[cat] = (types[cat] || 0) + 1;
+                    if (c.crash_context && c.crash_context.seconds_since_start != null) times.push(c.crash_context.seconds_since_start);
+                });
+                times.sort((a, b) => a - b);
+                const topTypes = Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, c]) => `${t} (${c})`);
+                return {
+                    name, count: items.length,
+                    top_crash_types: topTypes,
+                    median_session_time: times.length > 0 ? times[Math.floor(times.length / 2)] : null
+                };
+            }).sort((a, b) => b.count - a.count);
+        };
+
         // By GPU (prefer extracted)
-        const gpuBreakdown = countBy(crashes, c => (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown');
+        const gpuBreakdown = enrichedCountBy(crashes, c => (c.crash_context && c.crash_context.gpu) || c.gpu || 'unknown');
+
+        // By CPU
+        const cpuBreakdown = enrichedCountBy(
+            crashes.filter(c => c.crash_context && c.crash_context.cpu),
+            c => c.crash_context.cpu
+        );
 
         // By RAM
-        const ramBreakdown = countBy(
+        const ramBreakdown = enrichedCountBy(
             crashes.filter(c => c.crash_context && c.crash_context.ram_gb),
             c => c.crash_context.ram_gb + ' GB'
         );
 
         // By OS (simplified)
-        const osBreakdown = countBy(
+        const osBreakdown = enrichedCountBy(
             crashes.filter(c => c.crash_context && c.crash_context.os),
             c => {
                 const os = c.crash_context.os;
@@ -2698,6 +2763,7 @@ app.get('/api/crashes/summary', (req, res) => {
             top_groups: topGroups,
             crash_type_breakdown: crashTypeBreakdown,
             gpu_breakdown: gpuBreakdown,
+            cpu_breakdown: cpuBreakdown,
             ram_breakdown: ramBreakdown,
             os_breakdown: osBreakdown,
             version_breakdown: versionBreakdown,

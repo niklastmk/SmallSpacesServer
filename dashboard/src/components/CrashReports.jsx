@@ -107,6 +107,28 @@ function CrashTypeTooltip({ active, payload }) {
   )
 }
 
+function HardwareTooltip({ active, payload }) {
+  if (!active || !payload || !payload[0]) return null
+  const d = payload[0].payload
+  return (
+    <div style={{ background: '#1a1d21', border: '1px solid #2f3336', borderRadius: '8px', padding: '10px 14px', fontSize: '12px' }}>
+      <div style={{ fontWeight: '600', color: '#e7e9ea', marginBottom: '6px' }}>{d.name} — {d.count} crash{d.count !== 1 ? 'es' : ''}</div>
+      {d.top_crash_types?.length > 0 && <div style={{ color: '#71767b', marginTop: '4px' }}>Top issues: <span style={{ color: '#e7e9ea' }}>{d.top_crash_types.join(', ')}</span></div>}
+      {d.median_session_time != null && <div style={{ color: '#71767b' }}>Median session: <span style={{ color: '#e7e9ea' }}>{formatSessionTime(d.median_session_time)}</span></div>}
+      <div style={{ color: '#71767b', marginTop: '4px', fontSize: '11px', fontStyle: 'italic' }}>Click to filter groups</div>
+    </div>
+  )
+}
+
+function FilterChip({ label, onRemove }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', background: '#1d9bf022', border: '1px solid #1d9bf0', borderRadius: '16px', fontSize: '12px', color: '#1d9bf0' }}>
+      {label}
+      <span onClick={onRemove} style={{ cursor: 'pointer', fontWeight: '700', fontSize: '14px', lineHeight: 1 }}>&times;</span>
+    </span>
+  )
+}
+
 function CrashTypeBadge({ type }) {
   const color = CRASH_TYPE_COLORS[type] || CRASH_TYPE_COLORS.Other
   return <span style={{ ...s.badge, background: color + '22', color }}>{type}</span>
@@ -229,7 +251,7 @@ function CrashOverview({ summary, loading, onNavigateToGroup }) {
 // ============================================
 // GROUPS
 // ============================================
-function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
+function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardwareFilter, onHardwareFilter, filters }) {
   const [expandedId, setExpandedId] = useState(initialExpandedId || null)
   const [sortBy, setSortBy] = useState('recent') // 'recent' or 'count'
 
@@ -240,13 +262,16 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
   const [groupCrashes, setGroupCrashes] = useState({})
   const [loadingGroup, setLoadingGroup] = useState(null)
 
+  // Clear cached group crashes when filters change
+  useEffect(() => { setGroupCrashes({}) }, [hardwareFilter, filters?.from])
+
   const toggleGroup = async (groupId) => {
     if (expandedId === groupId) { setExpandedId(null); return }
     setExpandedId(groupId)
     if (!groupCrashes[groupId]) {
       setLoadingGroup(groupId)
       try {
-        const data = await getCrashGroup(groupId)
+        const data = await getCrashGroup(groupId, filters)
         setGroupCrashes(prev => ({ ...prev, [groupId]: data.crashes }))
       } catch (err) { console.error(err) }
       finally { setLoadingGroup(null) }
@@ -283,9 +308,14 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-        <div style={{ fontSize: '13px', color: '#71767b' }}>
-          {groups.length} unique issue{groups.length !== 1 ? 's' : ''} from {crashes.length} crash{crashes.length !== 1 ? 'es' : ''}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: '13px', color: '#71767b' }}>
+            {groups.length} unique issue{groups.length !== 1 ? 's' : ''} from {crashes.length} crash{crashes.length !== 1 ? 'es' : ''}
+          </div>
+          {hardwareFilter && (
+            <FilterChip label={`${hardwareFilter.type.toUpperCase()}: ${hardwareFilter.value}`} onRemove={() => onHardwareFilter(null)} />
+          )}
         </div>
         <div style={{ display: 'flex', gap: '4px', background: '#1a1d21', borderRadius: '6px', padding: '2px', border: '1px solid #2f3336' }}>
           <button style={{ ...s.subTab, fontSize: '11px', padding: '4px 10px', ...(sortBy === 'recent' ? { background: '#2f3336', color: '#e7e9ea' } : {}) }}
@@ -405,7 +435,7 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId }) {
 // ============================================
 // HARDWARE
 // ============================================
-function HardwareView({ summary, loading }) {
+function HardwareView({ summary, loading, onHardwareFilter }) {
   if (loading) return <div style={s.loading}>Loading...</div>
   if (!summary || summary.total_crashes === 0) return <div style={s.emptyState}><div style={s.emptyTitle}>No data</div></div>
 
@@ -415,28 +445,58 @@ function HardwareView({ summary, loading }) {
     .map(([gpu, types]) => ({ gpu, total: Object.values(types).reduce((a, b) => a + b, 0), ...types }))
     .sort((a, b) => b.total - a.total)
 
+  const handleBarClick = (type) => (data) => {
+    if (data && data.activePayload?.[0]) {
+      onHardwareFilter({ type, value: data.activePayload[0].payload.name })
+    }
+  }
+
   return (
     <div>
       <div style={s.chartsGrid}>
         <div style={s.chartCard}>
           <div style={s.chartTitle}>Crashes by GPU</div>
           <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={summary.gpu_breakdown?.slice(0, 10)} layout="vertical">
+            <BarChart data={summary.gpu_breakdown?.slice(0, 10)} layout="vertical" onClick={handleBarClick('gpu')} style={{ cursor: 'pointer' }}>
               <XAxis type="number" tick={{ fontSize: 10, fill: '#71767b' }} allowDecimals={false} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: '#71767b' }} width={160} tickFormatter={v => v.length > 26 ? v.slice(0, 26) + '...' : v} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <Tooltip content={<HardwareTooltip />} />
               <Bar dataKey="count" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
         <div style={s.chartCard}>
+          <div style={s.chartTitle}>Crashes by CPU</div>
+          {summary.cpu_breakdown?.length > 0 ? (
+            <ResponsiveContainer width="100%" height={250}>
+              <BarChart data={summary.cpu_breakdown?.slice(0, 10)} layout="vertical" onClick={handleBarClick('cpu')} style={{ cursor: 'pointer' }}>
+                <XAxis type="number" tick={{ fontSize: 10, fill: '#71767b' }} allowDecimals={false} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: '#71767b' }} width={180} tickFormatter={v => v.length > 30 ? v.slice(0, 30) + '...' : v} />
+                <Tooltip content={<HardwareTooltip />} />
+                <Bar dataKey="count" fill="#10b981" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <div style={{ color: '#71767b', padding: '20px 0' }}>No CPU data</div>}
+        </div>
+        <div style={s.chartCard}>
           <div style={s.chartTitle}>Crashes by RAM</div>
           <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={summary.ram_breakdown}>
+            <BarChart data={summary.ram_breakdown} onClick={handleBarClick('ram')} style={{ cursor: 'pointer' }}>
               <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#71767b' }} />
               <YAxis tick={{ fontSize: 10, fill: '#71767b' }} allowDecimals={false} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <Tooltip content={<HardwareTooltip />} />
               <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={s.chartCard}>
+          <div style={s.chartTitle}>Crashes by OS</div>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={summary.os_breakdown} onClick={handleBarClick('os')} style={{ cursor: 'pointer' }}>
+              <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#71767b' }} />
+              <YAxis tick={{ fontSize: 10, fill: '#71767b' }} allowDecimals={false} />
+              <Tooltip content={<HardwareTooltip />} />
+              <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -447,7 +507,7 @@ function HardwareView({ summary, loading }) {
               <BarChart data={summary.oom_by_ram}>
                 <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#71767b' }} />
                 <YAxis tick={{ fontSize: 10, fill: '#71767b' }} allowDecimals={false} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Tooltip content={<HardwareTooltip />} />
                 <Bar dataKey="count" fill="#ef4444" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -460,23 +520,11 @@ function HardwareView({ summary, loading }) {
               <BarChart data={summary.oom_by_gpu.slice(0, 8)} layout="vertical">
                 <XAxis type="number" tick={{ fontSize: 10, fill: '#71767b' }} allowDecimals={false} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: '#71767b' }} width={160} tickFormatter={v => v.length > 26 ? v.slice(0, 26) + '...' : v} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Tooltip content={<HardwareTooltip />} />
                 <Bar dataKey="count" fill="#ef4444" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : <div style={{ color: '#71767b', padding: '20px 0' }}>No OOM crashes</div>}
-        </div>
-        <div style={s.chartCard}>
-          <div style={s.chartTitle}>Crashes by OS</div>
-          <ResponsiveContainer width="100%" height={250}>
-            <PieChart>
-              <Pie data={summary.os_breakdown} dataKey="count" nameKey="name" cx="50%" cy="50%" outerRadius={80}
-                label={({ name, count }) => `${name} (${count})`} labelLine={{ stroke: '#71767b' }} fontSize={11}>
-                {(summary.os_breakdown || []).map((e, i) => <Cell key={e.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-              </Pie>
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
-            </PieChart>
-          </ResponsiveContainer>
         </div>
       </div>
       <div style={s.card}>
@@ -487,7 +535,9 @@ function HardwareView({ summary, loading }) {
             {allTypes.map(t => <th key={t} style={{ ...s.th, textAlign: 'right' }}>{t}</th>)}
           </tr></thead><tbody>
             {gpuRows.map(row => (
-              <tr key={row.gpu}>
+              <tr key={row.gpu} style={{ cursor: 'pointer' }} onClick={() => onHardwareFilter({ type: 'gpu', value: row.gpu })}
+                onMouseEnter={e => e.currentTarget.style.background = '#1a1d21'}
+                onMouseLeave={e => e.currentTarget.style.background = ''}>
                 <td style={s.td}>{row.gpu}</td>
                 <td style={{ ...s.td, textAlign: 'right', fontWeight: '600' }}>{row.total}</td>
                 {allTypes.map(t => (
@@ -594,6 +644,7 @@ const TIME_RANGES = [
 function CrashReports() {
   const [tab, setTab] = useState('overview')
   const [timeRange, setTimeRange] = useState('all')
+  const [hardwareFilter, setHardwareFilter] = useState(null) // { type: 'gpu'|'cpu'|'ram'|'os', value: string }
   const [crashes, setCrashes] = useState([])
   const [groups, setGroups] = useState([])
   const [summary, setSummary] = useState(null)
@@ -607,24 +658,31 @@ function CrashReports() {
     setTab('groups')
   }
 
-  const getFromDate = () => {
+  const handleHardwareFilter = (filter) => {
+    setHardwareFilter(filter)
+    if (filter) setTab('groups')
+  }
+
+  const getFilters = () => {
+    const filters = {}
     const range = TIME_RANGES.find(r => r.id === timeRange)
-    if (!range || !range.ms) return undefined
-    return new Date(Date.now() - range.ms).toISOString()
+    if (range && range.ms) filters.from = new Date(Date.now() - range.ms).toISOString()
+    if (hardwareFilter) filters[hardwareFilter.type] = hardwareFilter.value
+    return filters
   }
 
   const fetchAll = async () => {
     try {
       setLoading(true); setError(null)
-      const from = getFromDate()
+      const filters = getFilters()
       const [cd, gd, sd] = await Promise.all([
-        getCrashes({ from }), getCrashGroups({ from }).catch(() => ({ groups: [] })), getCrashSummary({ from }).catch(() => null)
+        getCrashes(filters), getCrashGroups(filters).catch(() => ({ groups: [] })), getCrashSummary(filters).catch(() => null)
       ])
       setCrashes(cd.crashes || []); setGroups(gd.groups || []); setSummary(sd)
     } catch (err) { setError(err.message) }
     finally { setLoading(false) }
   }
-  useEffect(() => { fetchAll() }, [timeRange])
+  useEffect(() => { fetchAll() }, [timeRange, hardwareFilter])
 
   const handleReclassify = async () => {
     if (!confirm('Re-extract and re-categorize all crash reports?')) return
@@ -636,7 +694,7 @@ function CrashReports() {
   const handleDelete = async (crashId) => {
     await deleteCrash(crashId)
     setCrashes(crashes.filter(c => c.id !== crashId))
-    getCrashSummary().then(setSummary).catch(() => {})
+    getCrashSummary(getFilters()).then(setSummary).catch(() => {})
   }
 
   const tabs = [
@@ -675,10 +733,17 @@ function CrashReports() {
           </button>
         </div>
       </div>
+      {hardwareFilter && tab !== 'groups' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '12px', color: '#71767b' }}>Filtered by:</span>
+          <FilterChip label={`${hardwareFilter.type.toUpperCase()}: ${hardwareFilter.value}`} onRemove={() => setHardwareFilter(null)} />
+        </div>
+      )}
       {error && <div style={s.error}>{error}</div>}
       {tab === 'overview' && <CrashOverview summary={summary} loading={loading} onNavigateToGroup={navigateToGroup} />}
-      {tab === 'groups' && <CrashGroupsView groups={groups} loading={loading} crashes={crashes} initialExpandedId={focusedGroupId} />}
-      {tab === 'hardware' && <HardwareView summary={summary} loading={loading} />}
+      {tab === 'groups' && <CrashGroupsView groups={groups} loading={loading} crashes={crashes} initialExpandedId={focusedGroupId}
+        hardwareFilter={hardwareFilter} onHardwareFilter={setHardwareFilter} filters={getFilters()} />}
+      {tab === 'hardware' && <HardwareView summary={summary} loading={loading} onHardwareFilter={handleHardwareFilter} />}
       {tab === 'reports' && <AllReports crashes={crashes} loading={loading} onRefresh={fetchAll} onDelete={handleDelete} />}
     </div>
   )

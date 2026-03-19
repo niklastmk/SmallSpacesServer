@@ -96,11 +96,20 @@ export async function getEventBreakdown(eventName, propertyName = null) {
 // CRASH REPORTS API
 // ============================================
 
-// Get all crash reports
-export async function getCrashes({ from } = {}) {
+// Build query string from filter object
+function buildFilterParams({ from, gpu, cpu, ram, os } = {}) {
   const params = new URLSearchParams();
   if (from) params.set('from', from);
-  const qs = params.toString();
+  if (gpu) params.set('gpu', gpu);
+  if (cpu) params.set('cpu', cpu);
+  if (ram) params.set('ram', ram);
+  if (os) params.set('os', os);
+  return params.toString();
+}
+
+// Get all crash reports
+export async function getCrashes(filters = {}) {
+  const qs = buildFilterParams(filters);
   return fetchWithAuth(`/api/crashes${qs ? '?' + qs : ''}`);
 }
 
@@ -120,22 +129,19 @@ export async function reclassifyCrashes() {
 }
 
 // Get crash groups
-export async function getCrashGroups({ from } = {}) {
-  const params = new URLSearchParams();
-  if (from) params.set('from', from);
-  const qs = params.toString();
+export async function getCrashGroups(filters = {}) {
+  const qs = buildFilterParams(filters);
   return fetchWithAuth(`/api/crashes/groups${qs ? '?' + qs : ''}`);
 }
 
 // Get a specific crash group with its crashes
-export async function getCrashGroup(groupId) {
-  return fetchWithAuth(`/api/crashes/groups/${groupId}`);
+export async function getCrashGroup(groupId, filters = {}) {
+  const qs = buildFilterParams(filters);
+  return fetchWithAuth(`/api/crashes/groups/${groupId}${qs ? '?' + qs : ''}`);
 }
 
 // Get crash analytics summary
-export async function getCrashSummary({ from } = {}) {
-  const params = new URLSearchParams();
-  if (from) params.set('from', from);
-  const qs = params.toString();
+export async function getCrashSummary(filters = {}) {
+  const qs = buildFilterParams(filters);
   return fetchWithAuth(`/api/crashes/summary${qs ? '?' + qs : ''}`);
 }
