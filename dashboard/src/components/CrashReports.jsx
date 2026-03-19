@@ -333,7 +333,7 @@ function GroupCrashesTable({ crashes, count, loading: isLoading }) {
 // ============================================
 // GROUPS
 // ============================================
-function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardwareFilter, onHardwareFilter, filters }) {
+function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardwareFilter, onHardwareFilter, filters, timeRange, customFrom, customTo }) {
   const [expandedId, setExpandedId] = useState(initialExpandedId || null)
   const [sortBy, setSortBy] = useState('recent') // 'recent' or 'count'
 
@@ -344,9 +344,13 @@ function CrashGroupsView({ groups, loading, crashes, initialExpandedId, hardware
   const [groupCrashes, setGroupCrashes] = useState({})
   const [loadingGroup, setLoadingGroup] = useState(null)
 
-  // Clear cached group crashes when filters actually change
-  const filterKey = JSON.stringify(filters)
-  useEffect(() => { setGroupCrashes({}) }, [filterKey])
+  // Clear cached group crashes when filters actually change — use stable user-controlled values
+  const filterKey = timeRange + '|' + (customFrom || '') + '|' + (customTo || '') + '|' + (hardwareFilter ? hardwareFilter.type + ':' + hardwareFilter.value : '')
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey)
+  if (filterKey !== prevFilterKey) {
+    setPrevFilterKey(filterKey)
+    setGroupCrashes({})
+  }
 
   const toggleGroup = async (groupId) => {
     if (expandedId === groupId) { setExpandedId(null); return }
@@ -711,7 +715,7 @@ const dateInputStyle = {
 
 function CrashReports() {
   const [tab, setTab] = useState('overview')
-  const [timeRange, setTimeRange] = useState('all')
+  const [timeRange, setTimeRange] = useState('30d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [hardwareFilter, setHardwareFilter] = useState(null) // { type: 'gpu'|'cpu'|'ram'|'os', value: string }
@@ -870,7 +874,8 @@ function CrashReports() {
       {error && <div style={s.error}>{error}</div>}
       {tab === 'overview' && <CrashOverview summary={summary} loading={loading} onNavigateToGroup={navigateToGroup} />}
       {tab === 'groups' && <CrashGroupsView groups={groups} loading={loading} crashes={crashes} initialExpandedId={focusedGroupId}
-        hardwareFilter={hardwareFilter} onHardwareFilter={setHardwareFilter} filters={getFilters()} />}
+        hardwareFilter={hardwareFilter} onHardwareFilter={setHardwareFilter} filters={getFilters()}
+        timeRange={timeRange} customFrom={customFrom} customTo={customTo} />}
       {tab === 'hardware' && <HardwareView summary={summary} loading={loading} onHardwareFilter={handleHardwareFilter} />}
       {tab === 'reports' && <AllReports crashes={crashes} loading={loading} onRefresh={fetchAll} onDelete={handleDelete} />}
     </div>
