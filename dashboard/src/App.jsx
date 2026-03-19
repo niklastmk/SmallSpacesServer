@@ -18,7 +18,7 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: '32px',
+    marginBottom: '24px',
     paddingBottom: '16px',
     borderBottom: '1px solid #2f3336'
   },
@@ -101,10 +101,33 @@ const styles = {
     alignItems: 'center',
     height: '200px',
     color: '#71767b'
-  }
+  },
+  sectionSwitcher: {
+    display: 'flex',
+    gap: '0',
+    marginBottom: '20px',
+  },
+  sectionBtn: {
+    background: 'transparent',
+    border: '1px solid #2f3336',
+    color: '#71767b',
+    padding: '10px 24px',
+    cursor: 'pointer',
+    fontSize: '15px',
+    fontWeight: '600',
+    transition: 'all 0.15s',
+  },
+  sectionBtnActive: {
+    background: '#e7e9ea',
+    color: '#16181c',
+    borderColor: '#e7e9ea',
+  },
 }
 
+const ANALYTICS_TABS = ['overview', 'breakdown', 'events', 'sessions']
+
 function App() {
+  const [section, setSection] = useState('crashes')
   const [activeTab, setActiveTab] = useState('overview')
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -126,15 +149,15 @@ function App() {
   }
 
   useEffect(() => {
-    fetchData()
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchData, 30000)
-    return () => clearInterval(interval)
-  }, [])
+    if (section === 'analytics') {
+      fetchData()
+      const interval = setInterval(fetchData, 30000)
+      return () => clearInterval(interval)
+    }
+  }, [section])
 
   const handleLogout = () => {
     clearAdminKey()
-    // Prompt for new key immediately
     const newKey = prompt('Enter new admin key:')
     if (newKey) {
       localStorage.setItem('adminKey', newKey)
@@ -142,21 +165,13 @@ function App() {
     window.location.reload()
   }
 
-  if (loading && !summary) {
-    return (
-      <div style={styles.container}>
-        <div style={styles.loading}>Loading analytics data...</div>
-      </div>
-    )
-  }
-
   return (
     <div style={styles.container}>
       <header style={styles.header}>
         <div>
-          <h1 style={styles.title}>Small Spaces Analytics</h1>
+          <h1 style={styles.title}>Small Spaces Dashboard</h1>
           <p style={styles.subtitle}>
-            {lastRefresh && `Last updated: ${lastRefresh.toLocaleTimeString()}`}
+            {section === 'analytics' && lastRefresh && `Last updated: ${lastRefresh.toLocaleTimeString()}`}
           </p>
         </div>
         <button style={styles.logoutBtn} onClick={handleLogout}>
@@ -164,7 +179,20 @@ function App() {
         </button>
       </header>
 
-      {error && (
+      <div style={styles.sectionSwitcher}>
+        <button
+          style={{ ...styles.sectionBtn, borderRadius: '8px 0 0 8px', ...(section === 'crashes' ? styles.sectionBtnActive : {}) }}
+          onClick={() => setSection('crashes')}>
+          Crash Reports
+        </button>
+        <button
+          style={{ ...styles.sectionBtn, borderRadius: '0 8px 8px 0', borderLeft: 'none', ...(section === 'analytics' ? styles.sectionBtnActive : {}) }}
+          onClick={() => setSection('analytics')}>
+          Analytics
+        </button>
+      </div>
+
+      {error && section === 'analytics' && (
         <div style={styles.error}>
           Error: {error}
           <button
@@ -176,73 +204,73 @@ function App() {
         </div>
       )}
 
-      <div style={styles.tabs}>
-        {['overview', 'breakdown', 'events', 'sessions', 'crashes'].map(tab => (
-          <button
-            key={tab}
-            style={{
-              ...styles.tab,
-              ...(activeTab === tab ? styles.tabActive : {})
-            }}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
-          </button>
-        ))}
-      </div>
+      {section === 'crashes' && <CrashReports />}
 
-      {activeTab === 'overview' && summary && (
+      {section === 'analytics' && (
         <>
-          <div style={styles.statsGrid}>
-            <StatsCard
-              title="Events Today"
-              value={summary.events.today}
-              subtitle={`${summary.events.this_week} this week`}
-            />
-            <StatsCard
-              title="Total Events"
-              value={summary.events.total}
-              subtitle={`${summary.events.this_month} this month`}
-            />
-            <StatsCard
-              title="Sessions Today"
-              value={summary.sessions.today}
-              subtitle={`${summary.sessions.active} active`}
-            />
-            <StatsCard
-              title="Total Sessions"
-              value={summary.sessions.total}
-              subtitle={`${summary.sessions.this_week} this week`}
-            />
-          </div>
+          {loading && !summary ? (
+            <div style={styles.loading}>Loading analytics data...</div>
+          ) : (
+            <>
+              <div style={styles.tabs}>
+                {ANALYTICS_TABS.map(tab => (
+                  <button
+                    key={tab}
+                    style={{
+                      ...styles.tab,
+                      ...(activeTab === tab ? styles.tabActive : {})
+                    }}
+                    onClick={() => setActiveTab(tab)}
+                  >
+                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  </button>
+                ))}
+              </div>
 
-          <div style={styles.grid2}>
-            <div style={styles.card}>
-              <h3 style={styles.sectionTitle}>Events (Last 7 Days)</h3>
-              <EventsChart data={summary.events_per_day} />
-            </div>
-            <div style={styles.card}>
-              <h3 style={styles.sectionTitle}>Top Events</h3>
-              <TopEventsTable events={summary.top_events} />
-            </div>
-          </div>
+              {activeTab === 'overview' && summary && (
+                <>
+                  <div style={styles.statsGrid}>
+                    <StatsCard
+                      title="Events Today"
+                      value={summary.events.today}
+                      subtitle={`${summary.events.this_week} this week`}
+                    />
+                    <StatsCard
+                      title="Total Events"
+                      value={summary.events.total}
+                      subtitle={`${summary.events.this_month} this month`}
+                    />
+                    <StatsCard
+                      title="Sessions Today"
+                      value={summary.sessions.today}
+                      subtitle={`${summary.sessions.active} active`}
+                    />
+                    <StatsCard
+                      title="Total Sessions"
+                      value={summary.sessions.total}
+                      subtitle={`${summary.sessions.this_week} this week`}
+                    />
+                  </div>
+
+                  <div style={styles.grid2}>
+                    <div style={styles.card}>
+                      <h3 style={styles.sectionTitle}>Events (Last 7 Days)</h3>
+                      <EventsChart data={summary.events_per_day} />
+                    </div>
+                    <div style={styles.card}>
+                      <h3 style={styles.sectionTitle}>Top Events</h3>
+                      <TopEventsTable events={summary.top_events} />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {activeTab === 'breakdown' && <EventBreakdown />}
+              {activeTab === 'events' && <EventsExplorer />}
+              {activeTab === 'sessions' && <SessionsList />}
+            </>
+          )}
         </>
-      )}
-
-      {activeTab === 'breakdown' && (
-        <EventBreakdown />
-      )}
-
-      {activeTab === 'events' && (
-        <EventsExplorer />
-      )}
-
-      {activeTab === 'sessions' && (
-        <SessionsList />
-      )}
-
-      {activeTab === 'crashes' && (
-        <CrashReports />
       )}
     </div>
   )
