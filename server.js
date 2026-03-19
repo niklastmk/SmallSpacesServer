@@ -2515,17 +2515,30 @@ app.get('/api/crashes/groups', (req, res) => {
         const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-        // Enrich groups with recency data and filter
+        // Recompute group metadata from filtered crashes
         groups = groups.map(group => {
             const groupCrashes = allCrashes.filter(c => group.crash_ids.includes(c.id));
             const filteredGroupCrashes = groupCrashes.filter(c => filteredIds.has(c.id));
+            // Use filtered crashes for all displayed metadata when filters are active
+            const displayCrashes = hasFilters ? filteredGroupCrashes : groupCrashes;
+            const dates = displayCrashes.map(c => getCrashDateForReport(c)).sort((a, b) => a - b);
+            const gpus = [...new Set(displayCrashes.map(c => (c.crash_context && c.crash_context.gpu) || c.gpu).filter(g => g && g !== 'unknown'))];
+            const versions = [...new Set(displayCrashes.map(c => c.version).filter(v => v && v !== 'unknown'))];
+            const platforms = [...new Set(displayCrashes.map(c => c.platform).filter(p => p && p !== 'unknown'))];
             return {
                 ...group,
-                crashes_last_7d: groupCrashes.filter(c => getCrashDateForReport(c) >= weekAgo).length,
-                crashes_last_30d: groupCrashes.filter(c => getCrashDateForReport(c) >= monthAgo).length,
-                filtered_count: filteredGroupCrashes.length
+                count: displayCrashes.length,
+                crash_ids: displayCrashes.map(c => c.id),
+                first_seen: dates.length > 0 ? dates[0].toISOString() : group.first_seen,
+                last_seen: dates.length > 0 ? dates[dates.length - 1].toISOString() : group.last_seen,
+                affected_gpus: gpus,
+                affected_versions: versions,
+                affected_platforms: platforms,
+                severity: deriveSeverity(displayCrashes.length),
+                crashes_last_7d: displayCrashes.filter(c => getCrashDateForReport(c) >= weekAgo).length,
+                crashes_last_30d: displayCrashes.filter(c => getCrashDateForReport(c) >= monthAgo).length,
             };
-        }).filter(g => hasFilters ? g.filtered_count > 0 : true);
+        }).filter(g => hasFilters ? g.count > 0 : true);
 
         // Sort by last_seen (most recent first), then by count
         groups.sort((a, b) => {

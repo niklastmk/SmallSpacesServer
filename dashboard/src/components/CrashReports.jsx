@@ -654,6 +654,7 @@ function CrashReports() {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [hardwareFilter, setHardwareFilter] = useState(null) // { type: 'gpu'|'cpu'|'ram'|'os', value: string }
+  const [hwOptions, setHwOptions] = useState(null) // hardware lists for filter dropdown
   const [crashes, setCrashes] = useState([])
   const [groups, setGroups] = useState([])
   const [summary, setSummary] = useState(null)
@@ -669,7 +670,6 @@ function CrashReports() {
 
   const handleHardwareFilter = (filter) => {
     setHardwareFilter(filter)
-    if (filter) setTab('groups')
   }
 
   const getFilters = () => {
@@ -697,12 +697,32 @@ function CrashReports() {
     finally { setLoading(false) }
   }
   useEffect(() => {
-    if (timeRange !== 'custom') fetchAll()
-  }, [timeRange, hardwareFilter])
-  // For custom range, fetch when dates change (debounced by requiring both)
+    if (timeRange === 'custom') {
+      if (customFrom || customTo) fetchAll()
+    } else {
+      fetchAll()
+    }
+  }, [timeRange, hardwareFilter, customFrom, customTo])
+
+  // Fetch hardware options for the filter dropdown (unfiltered by hardware, respects time range)
   useEffect(() => {
-    if (timeRange === 'custom' && (customFrom || customTo)) fetchAll()
-  }, [customFrom, customTo])
+    const timeFilters = {}
+    if (timeRange === 'custom') {
+      if (customFrom) timeFilters.from = new Date(customFrom).toISOString()
+      if (customTo) timeFilters.to = customTo
+    } else {
+      const range = TIME_RANGES.find(r => r.id === timeRange)
+      if (range && range.ms) timeFilters.from = new Date(Date.now() - range.ms).toISOString()
+    }
+    getCrashSummary(timeFilters).then(s => {
+      if (s) setHwOptions({
+        gpu: (s.gpu_breakdown || []).map(x => x.name),
+        cpu: (s.cpu_breakdown || []).map(x => x.name),
+        ram: (s.ram_breakdown || []).map(x => x.name),
+        os: (s.os_breakdown || []).map(x => x.name),
+      })
+    }).catch(() => {})
+  }, [timeRange, customFrom, customTo])
 
   const handleReclassify = async () => {
     if (!confirm('Re-extract and re-categorize all crash reports?')) return
@@ -762,10 +782,27 @@ function CrashReports() {
           </button>
         </div>
       </div>
-      {hardwareFilter && tab !== 'groups' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '12px', color: '#71767b' }}>Filtered by:</span>
-          <FilterChip label={`${hardwareFilter.type.toUpperCase()}: ${hardwareFilter.value}`} onRemove={() => setHardwareFilter(null)} />
+      {(hardwareFilter || hwOptions) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {hardwareFilter ? (
+            <FilterChip label={`${hardwareFilter.type.toUpperCase()}: ${hardwareFilter.value}`} onRemove={() => setHardwareFilter(null)} />
+          ) : hwOptions && (
+            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+              <span style={{ fontSize: '12px', color: '#71767b' }}>Filter:</span>
+              {[
+                { type: 'gpu', label: 'GPU', options: hwOptions.gpu },
+                { type: 'cpu', label: 'CPU', options: hwOptions.cpu },
+                { type: 'ram', label: 'RAM', options: hwOptions.ram },
+                { type: 'os', label: 'OS', options: hwOptions.os },
+              ].filter(f => f.options?.length > 0).map(f => (
+                <select key={f.type} value="" onChange={e => { if (e.target.value) setHardwareFilter({ type: f.type, value: e.target.value }) }}
+                  style={{ ...dateInputStyle, padding: '4px 6px', fontSize: '11px', minWidth: 0 }}>
+                  <option value="">{f.label}</option>
+                  {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {error && <div style={s.error}>{error}</div>}
