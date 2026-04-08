@@ -8,10 +8,11 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 
-// UUID format validation — prevents path traversal and injection via IDs
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// ID format validation — accepts both standard UUIDs (with dashes) and UE-style GUIDs (32 hex chars)
+// Prevents path traversal and injection via IDs
+const VALID_ID_REGEX = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 function isValidUUID(id) {
-    return typeof id === 'string' && UUID_REGEX.test(id);
+    return typeof id === 'string' && VALID_ID_REGEX.test(id);
 }
 // Try to load Sharp, fallback if not available
 let sharp;
