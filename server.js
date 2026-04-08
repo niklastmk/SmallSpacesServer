@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 
 // UUID format validation — prevents path traversal and injection via IDs
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -49,7 +50,7 @@ const corsOptions = {
         ? ['http://localhost:3000', 'http://127.0.0.1:3000']
         : process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : false,
     methods: ['GET', 'POST', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'x-admin-key'],
+    allowedHeaders: ['Content-Type', 'x-admin-key', 'x-api-key'],
 };
 
 // Security middleware
@@ -58,6 +59,7 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' } // Allow thumbnail loading
 }));
 app.use(cors(corsOptions));
+app.use(cookieParser());
 app.use(express.json({ limit: '50mb' })); // Large limit for save data + thumbnails
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -107,15 +109,79 @@ function requireAdmin(req, res, next) {
     next();
 }
 
-// Serve analytics dashboard static files (if built)
+// Game client authentication middleware — shared secret between game and server
+// This blocks casual abuse; a determined attacker can still extract the key from the game binary
+function requireApiKey(req, res, next) {
+    const apiKey = req.headers['x-api-key'];
+    const expectedKey = process.env.GAME_API_KEY;
+
+    // If no key configured, skip check (backwards compatible / development)
+    if (!expectedKey) {
+        return next();
+    }
+
+    if (!apiKey || typeof apiKey !== 'string') {
+        return res.status(403).json({ error: 'API key required' });
+    }
+
+    const keyBuffer = Buffer.from(apiKey);
+    const expectedBuffer = Buffer.from(expectedKey);
+    if (keyBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(keyBuffer, expectedBuffer)) {
+        return res.status(403).json({ error: 'Invalid API key' });
+    }
+
+    next();
+}
+
+// Serve analytics dashboard with auth gate — requires admin key cookie or query param to access
 const DASHBOARD_DIR = path.join(__dirname, 'dashboard', 'dist');
 if (fs.existsSync(DASHBOARD_DIR)) {
-    app.use('/admin', express.static(DASHBOARD_DIR));
+    // Auth gate: first visit must provide ?key=<admin_key> to get a session cookie
+    const dashboardAuth = (req, res, next) => {
+        const expectedKey = process.env.ADMIN_RESET_KEY;
+        if (!expectedKey) {
+            return res.status(503).send('Admin not configured');
+        }
+
+        // Check for key in query param (initial login) or cookie (subsequent requests)
+        const providedKey = req.query.key || req.cookies?.admin_session;
+
+        // Allow static assets (JS/CSS) if they have a valid referer from /admin
+        const referer = req.headers.referer || '';
+        if (referer.includes('/admin') && (req.path.endsWith('.js') || req.path.endsWith('.css') || req.path.endsWith('.svg'))) {
+            return next();
+        }
+
+        if (!providedKey || typeof providedKey !== 'string') {
+            return res.status(403).send('Access denied. Use /admin?key=YOUR_ADMIN_KEY to log in.');
+        }
+
+        const keyBuffer = Buffer.from(providedKey);
+        const expectedBuffer = Buffer.from(expectedKey);
+        if (keyBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(keyBuffer, expectedBuffer)) {
+            return res.status(403).send('Invalid admin key.');
+        }
+
+        // If authenticated via query param, set cookie and redirect to clean URL
+        if (req.query.key) {
+            res.cookie('admin_session', providedKey, {
+                httpOnly: true,
+                secure: !isDevelopment,
+                sameSite: 'strict',
+                maxAge: 24 * 60 * 60 * 1000 // 24 hours
+            });
+            return res.redirect('/admin');
+        }
+
+        next();
+    };
+
+    app.use('/admin', dashboardAuth, express.static(DASHBOARD_DIR));
     // Handle SPA routing - serve index.html for all /admin routes
-    app.get('/admin/*', (req, res) => {
+    app.get('/admin/*', dashboardAuth, (req, res) => {
         res.sendFile(path.join(DASHBOARD_DIR, 'index.html'));
     });
-    console.log('Analytics dashboard enabled at /admin');
+    console.log('Analytics dashboard enabled at /admin (auth-gated)');
 }
 
 // Storage directories - use persistent volume on Railway Pro
@@ -605,7 +671,7 @@ function categorizeAndGroupCrash(crashId) {
 // API Routes
 
 // Upload design
-app.post('/api/designs', async (req, res) => {
+app.post('/api/designs', requireApiKey, async (req, res) => {
     try {
         const { designId, title, description, authorName, level, saveData, thumbnail, christmasEvent } = req.body;
 
@@ -706,7 +772,7 @@ app.post('/api/designs', async (req, res) => {
 });
 
 // Browse designs
-app.get('/api/designs', (req, res) => {
+app.get('/api/designs', requireApiKey, (req, res) => {
     try {
         let allMetadata = loadMetadata();
 
@@ -827,7 +893,7 @@ app.get('/api/designs', (req, res) => {
 });
 
 // Get top downloaded designs
-app.get('/api/designs/top', (req, res) => {
+app.get('/api/designs/top', requireApiKey, (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit) || 3, 50);
         
@@ -857,7 +923,7 @@ app.get('/api/designs/top', (req, res) => {
 });
 
 // Download design (POST to increment counter)
-app.post('/api/designs/:id/download', (req, res) => {
+app.post('/api/designs/:id/download', requireApiKey, (req, res) => {
     try {
         const designId = req.params.id;
         if (!isValidUUID(designId)) {
@@ -914,7 +980,7 @@ app.post('/api/designs/:id/download', (req, res) => {
 });
 
 // Binary download endpoint (no Base64 overhead) - MUCH faster for large saves
-app.post('/api/designs/:id/download/binary', (req, res) => {
+app.post('/api/designs/:id/download/binary', requireApiKey, (req, res) => {
     try {
         const designId = req.params.id;
         if (!isValidUUID(designId)) {
@@ -971,7 +1037,7 @@ app.post('/api/designs/:id/download/binary', (req, res) => {
 });
 
 // Get metadata for multiple designs by IDs (no save data download)
-app.post('/api/designs/metadata', (req, res) => {
+app.post('/api/designs/metadata', requireApiKey, (req, res) => {
     try {
         const { ids } = req.body;
 
@@ -1022,7 +1088,7 @@ app.post('/api/designs/metadata', (req, res) => {
 });
 
 // Like/unlike design (increment/decrement download_count)
-app.post('/api/designs/:id/like', (req, res) => {
+app.post('/api/designs/:id/like', requireApiKey, (req, res) => {
     try {
         const designId = req.params.id;
         if (!isValidUUID(designId)) {
@@ -1066,7 +1132,7 @@ app.post('/api/designs/:id/like', (req, res) => {
 });
 
 // Serve thumbnails
-app.get('/api/thumbnails/:filename', (req, res) => {
+app.get('/api/thumbnails/:filename', requireApiKey, (req, res) => {
     try {
         // Sanitize filename — strip any directory traversal
         const filename = path.basename(req.params.filename);
@@ -1694,7 +1760,7 @@ function sanitizeProperties(props) {
 }
 
 // Track a single analytics event (no auth required - game clients send these)
-app.post('/api/analytics/event', (req, res) => {
+app.post('/api/analytics/event', requireApiKey, (req, res) => {
     try {
         const { session_id, event_name, properties, client_version, platform } = req.body;
 
@@ -1730,7 +1796,7 @@ app.post('/api/analytics/event', (req, res) => {
 });
 
 // Track multiple events in a batch (no auth required)
-app.post('/api/analytics/batch', (req, res) => {
+app.post('/api/analytics/batch', requireApiKey, (req, res) => {
     try {
         const { events: batchEvents, session_id, client_version, platform } = req.body;
 
@@ -1775,7 +1841,7 @@ app.post('/api/analytics/batch', (req, res) => {
 });
 
 // Start a new session (no auth required)
-app.post('/api/analytics/session/start', (req, res) => {
+app.post('/api/analytics/session/start', requireApiKey, (req, res) => {
     try {
         const { client_version, platform, metadata } = req.body;
 
@@ -1804,7 +1870,7 @@ app.post('/api/analytics/session/start', (req, res) => {
 });
 
 // End a session (no auth required)
-app.post('/api/analytics/session/end', (req, res) => {
+app.post('/api/analytics/session/end', requireApiKey, (req, res) => {
     try {
         const { session_id } = req.body;
 
@@ -2191,7 +2257,7 @@ app.delete('/api/admin/reset-analytics', requireAdmin, (req, res) => {
 // ============================================
 
 // Upload crash report (no auth required - game clients send these)
-app.post('/api/crashes', (req, res) => {
+app.post('/api/crashes', requireApiKey, (req, res) => {
     try {
         const { crashData, filename, sessionId, errorMessage, metadata } = req.body;
 
