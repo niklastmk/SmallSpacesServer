@@ -3,6 +3,8 @@ const cors = require('cors');
 const fs = require('fs-extra');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 // Try to load Sharp, fallback if not available
 let sharp;
 try {
@@ -34,19 +36,61 @@ const PORT = process.env.PORT || 3000;
 // Environment-based configuration
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
-// CORS configuration
+// CORS configuration — require ALLOWED_ORIGINS in production, never default to wildcard
 const corsOptions = {
-    origin: isDevelopment 
+    origin: isDevelopment
         ? ['http://localhost:3000', 'http://127.0.0.1:3000']
-        : process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['*'],
+        : process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : false,
     methods: ['GET', 'POST', 'DELETE'],
-    allowedHeaders: ['Content-Type'],
+    allowedHeaders: ['Content-Type', 'x-admin-key'],
 };
 
-// Middleware
+// Security middleware
+app.use(helmet({
+    contentSecurityPolicy: false, // Dashboard has its own CSP
+    crossOriginResourcePolicy: { policy: 'cross-origin' } // Allow thumbnail loading
+}));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // Large limit for save data + thumbnails
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Rate limiting — general API
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later' }
+});
+app.use('/api/', apiLimiter);
+
+// Stricter rate limit for write endpoints
+const writeLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many upload requests, please try again later' }
+});
+app.use('/api/designs', writeLimiter);
+app.use('/api/crashes', writeLimiter);
+
+// Shared admin authentication middleware
+function requireAdmin(req, res, next) {
+    const adminKey = req.headers['x-admin-key'];
+    const expectedKey = process.env.ADMIN_RESET_KEY;
+
+    if (!expectedKey) {
+        console.error('ADMIN_RESET_KEY not set — admin endpoints disabled');
+        return res.status(503).json({ error: 'Admin endpoints not configured' });
+    }
+
+    if (!adminKey || adminKey !== expectedKey) {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    next();
+}
 
 // Serve analytics dashboard static files (if built)
 const DASHBOARD_DIR = path.join(__dirname, 'dashboard', 'dist');
@@ -541,6 +585,17 @@ app.post('/api/designs', async (req, res) => {
             return res.status(400).json({ error: 'Title and saveData are required' });
         }
 
+        // Input length validation
+        if (typeof title !== 'string' || title.length > 200) {
+            return res.status(400).json({ error: 'Title must be a string under 200 characters' });
+        }
+        if (description && (typeof description !== 'string' || description.length > 2000)) {
+            return res.status(400).json({ error: 'Description must be under 2000 characters' });
+        }
+        if (authorName && (typeof authorName !== 'string' || authorName.length > 100)) {
+            return res.status(400).json({ error: 'Author name must be under 100 characters' });
+        }
+
         // Use provided designId or generate new one
         const finalDesignId = designId || uuidv4();
         const designFilename = `${finalDesignId}.sav`;
@@ -976,8 +1031,14 @@ app.post('/api/designs/:id/like', (req, res) => {
 // Serve thumbnails
 app.get('/api/thumbnails/:filename', (req, res) => {
     try {
-        const filename = req.params.filename;
+        // Sanitize filename — strip any directory traversal
+        const filename = path.basename(req.params.filename);
         const thumbnailPath = path.join(THUMBNAILS_DIR, filename);
+
+        // Double-check the resolved path is still inside THUMBNAILS_DIR
+        if (!thumbnailPath.startsWith(THUMBNAILS_DIR)) {
+            return res.status(400).json({ error: 'Invalid filename' });
+        }
 
         if (fs.existsSync(thumbnailPath)) {
             res.sendFile(thumbnailPath);
@@ -1079,14 +1140,7 @@ app.post('/api/test/compress', async (req, res) => {
 });
 
 // Bulk compress existing thumbnails with backup
-app.post('/api/admin/compress-existing', async (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-    
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-    
+app.post('/api/admin/compress-existing', requireAdmin, async (req, res) => {
     if (!sharp) {
         return res.status(500).json({ error: 'Sharp not available for compression' });
     }
@@ -1178,14 +1232,7 @@ app.post('/api/admin/compress-existing', async (req, res) => {
 });
 
 // Compress existing thumbnails IN-PLACE (keeps PNG extensions)
-app.post('/api/admin/compress-inplace', async (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-    
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-    
+app.post('/api/admin/compress-inplace', requireAdmin, async (req, res) => {
     if (!sharp) {
         return res.status(500).json({ error: 'Sharp not available for compression' });
     }
@@ -1282,14 +1329,7 @@ app.post('/api/admin/compress-inplace', async (req, res) => {
 });
 
 // Restore from backup
-app.post('/api/admin/restore-backup', async (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-    
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-    
+app.post('/api/admin/restore-backup', requireAdmin, async (req, res) => {
     try {
         const BACKUP_DIR = path.join(STORAGE_DIR, 'thumbnails-backup');
         
@@ -1322,8 +1362,8 @@ app.post('/api/admin/restore-backup', async (req, res) => {
     }
 });
 
-// Delete specific design by ID
-app.delete('/api/designs/:id', (req, res) => {
+// Delete specific design by ID (admin auth required)
+app.delete('/api/designs/:id', requireAdmin, (req, res) => {
     try {
         const designId = req.params.id;
         const designPath = path.join(DESIGNS_DIR, `${designId}.sav`);
@@ -1361,14 +1401,7 @@ app.delete('/api/designs/:id', (req, res) => {
 });
 
 // Manually update specific design title/author
-app.post('/api/admin/update-design-text', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.post('/api/admin/update-design-text', requireAdmin, (req, res) => {
     try {
         const { designId, title, authorName } = req.body;
 
@@ -1412,14 +1445,7 @@ app.post('/api/admin/update-design-text', (req, res) => {
 });
 
 // Export all censored entries to a file for manual correction
-app.get('/api/admin/export-censored', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/admin/export-censored', requireAdmin, (req, res) => {
     try {
         const allMetadata = loadMetadata();
         const censoredEntries = [];
@@ -1459,14 +1485,7 @@ app.get('/api/admin/export-censored', (req, res) => {
 });
 
 // Import manual corrections and apply them to the database
-app.post('/api/admin/import-corrections', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.post('/api/admin/import-corrections', requireAdmin, (req, res) => {
     try {
         const { corrections } = req.body;
 
@@ -1547,14 +1566,7 @@ app.post('/api/admin/import-corrections', (req, res) => {
 });
 
 // Repair censored text in metadata (fix old profanity filter damage)
-app.post('/api/admin/repair-censored', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.post('/api/admin/repair-censored', requireAdmin, (req, res) => {
     try {
         const allMetadata = loadMetadata();
         let repairedCount = 0;
@@ -1650,8 +1662,11 @@ app.post('/api/analytics/event', (req, res) => {
     try {
         const { session_id, event_name, properties, client_version, platform } = req.body;
 
-        if (!event_name) {
+        if (!event_name || typeof event_name !== 'string') {
             return res.status(400).json({ error: 'event_name is required' });
+        }
+        if (event_name.length > 200) {
+            return res.status(400).json({ error: 'event_name too long' });
         }
 
         const event = {
@@ -1685,6 +1700,9 @@ app.post('/api/analytics/batch', (req, res) => {
 
         if (!batchEvents || !Array.isArray(batchEvents)) {
             return res.status(400).json({ error: 'events array is required' });
+        }
+        if (batchEvents.length > 500) {
+            return res.status(400).json({ error: 'Batch too large (max 500 events)' });
         }
 
         const events = loadAnalyticsEvents();
@@ -1780,14 +1798,7 @@ app.post('/api/analytics/session/end', (req, res) => {
 });
 
 // Query events (admin auth required)
-app.get('/api/analytics/events', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/analytics/events', requireAdmin, (req, res) => {
     try {
         let events = loadAnalyticsEvents();
 
@@ -1833,14 +1844,7 @@ app.get('/api/analytics/events', (req, res) => {
 });
 
 // Get sessions list (admin auth required)
-app.get('/api/analytics/sessions', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/analytics/sessions', requireAdmin, (req, res) => {
     try {
         let sessions = loadAnalyticsSessions();
 
@@ -1866,14 +1870,7 @@ app.get('/api/analytics/sessions', (req, res) => {
 });
 
 // Get dashboard summary (admin auth required)
-app.get('/api/analytics/summary', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/analytics/summary', requireAdmin, (req, res) => {
     try {
         const events = loadAnalyticsEvents();
         const sessions = loadAnalyticsSessions();
@@ -1944,14 +1941,7 @@ app.get('/api/analytics/summary', (req, res) => {
 });
 
 // Get property breakdown for a specific event (admin auth required)
-app.get('/api/analytics/event-breakdown', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/analytics/event-breakdown', requireAdmin, (req, res) => {
     try {
         const eventName = req.query.event_name;
         const propertyName = req.query.property;
@@ -2030,14 +2020,7 @@ app.get('/api/analytics/event-breakdown', (req, res) => {
 });
 
 // Get unique event names (admin auth required)
-app.get('/api/analytics/event-names', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/analytics/event-names', requireAdmin, (req, res) => {
     try {
         const events = loadAnalyticsEvents();
         const eventNames = [...new Set(events.map(e => e.event_name))];
@@ -2051,14 +2034,7 @@ app.get('/api/analytics/event-names', (req, res) => {
 });
 
 // Clear analytics data (admin auth required)
-app.delete('/api/analytics/clear', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.delete('/api/analytics/clear', requireAdmin, (req, res) => {
     try {
         fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
         fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
@@ -2074,14 +2050,7 @@ app.delete('/api/analytics/clear', (req, res) => {
 });
 
 // Delete events before a certain date (admin auth required)
-app.delete('/api/analytics/events/before', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.delete('/api/analytics/events/before', requireAdmin, (req, res) => {
     try {
         const beforeDate = req.query.date;
 
@@ -2123,14 +2092,7 @@ app.delete('/api/analytics/events/before', (req, res) => {
 // ============================================
 
 // Admin reset with secret key (production safe)
-app.delete('/api/admin/reset', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-    
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-    
+app.delete('/api/admin/reset', requireAdmin, (req, res) => {
     try {
         // Clear all designs
         if (fs.existsSync(DESIGNS_DIR)) {
@@ -2158,14 +2120,7 @@ app.delete('/api/admin/reset', (req, res) => {
 });
 
 // Clear analytics data only (admin protected)
-app.delete('/api/admin/reset-analytics', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.delete('/api/admin/reset-analytics', requireAdmin, (req, res) => {
     try {
         // Clear analytics events
         if (fs.existsSync(ANALYTICS_EVENTS_FILE)) {
@@ -2204,13 +2159,21 @@ app.post('/api/crashes', (req, res) => {
             return res.status(400).json({ error: 'crashData is required' });
         }
 
+        // Decode and validate size (50 MB limit for crash ZIPs)
+        const buffer = Buffer.from(crashData, 'base64');
+        const MAX_CRASH_SIZE = 50 * 1024 * 1024;
+        if (buffer.length > MAX_CRASH_SIZE) {
+            return res.status(413).json({ error: `Crash file too large (${(buffer.length / 1024 / 1024).toFixed(1)} MB, max ${MAX_CRASH_SIZE / 1024 / 1024} MB)` });
+        }
+
         const crashId = uuidv4();
         const originalFilename = filename || `crash_${crashId}.zip`;
-        const storedFilename = `${crashId}_${originalFilename}`;
+        // Sanitize stored filename
+        const safeOriginal = path.basename(originalFilename).replace(/[^\w.\-]/g, '_');
+        const storedFilename = `${crashId}_${safeOriginal}`;
         const crashPath = path.join(CRASHES_DIR, storedFilename);
 
-        // Decode and save the crash file
-        const buffer = Buffer.from(crashData, 'base64');
+        // Save the crash file
         fs.writeFileSync(crashPath, buffer);
 
         // Extract crash context from the ZIP (CrashContext.runtime-xml)
@@ -2281,14 +2244,7 @@ app.post('/api/crashes', (req, res) => {
 });
 
 // List all crash reports (admin auth required)
-app.get('/api/crashes', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/crashes', requireAdmin, (req, res) => {
     try {
         let crashes = loadCrashesMetadata();
         crashes = applyFilters(crashes, req.query);
@@ -2308,14 +2264,7 @@ app.get('/api/crashes', (req, res) => {
 });
 
 // Download crash report (admin auth required)
-app.get('/api/crashes/:id/download', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/crashes/:id/download', requireAdmin, (req, res) => {
     try {
         const crashId = req.params.id;
         const crashes = loadCrashesMetadata();
@@ -2331,9 +2280,10 @@ app.get('/api/crashes/:id/download', (req, res) => {
             return res.status(404).json({ error: 'Crash file not found on disk' });
         }
 
-        // Send file for download
+        // Send file for download — sanitize filename to prevent header injection
+        const safeFilename = path.basename(crash.filename).replace(/[^\w.\-]/g, '_');
         res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', `attachment; filename="${crash.filename}"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
         res.sendFile(crashPath);
 
     } catch (error) {
@@ -2343,14 +2293,7 @@ app.get('/api/crashes/:id/download', (req, res) => {
 });
 
 // Delete crash report (admin auth required)
-app.delete('/api/crashes/:id', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.delete('/api/crashes/:id', requireAdmin, (req, res) => {
     try {
         const crashId = req.params.id;
         const crashes = loadCrashesMetadata();
@@ -2390,14 +2333,7 @@ app.delete('/api/crashes/:id', (req, res) => {
 // ============================================
 
 // Reclassify all crash reports (clears groups, re-analyzes each crash)
-app.post('/api/crashes/reclassify', async (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.post('/api/crashes/reclassify', requireAdmin, async (req, res) => {
     try {
         const crashes = loadCrashesMetadata();
 
@@ -2497,14 +2433,7 @@ app.get('/api/crashes/categories', (req, res) => {
 });
 
 // Get crash groups (admin auth required)
-app.get('/api/crashes/groups', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/crashes/groups', requireAdmin, (req, res) => {
     try {
         let groups = loadCrashGroups();
         const allCrashes = loadCrashesMetadata();
@@ -2556,14 +2485,7 @@ app.get('/api/crashes/groups', (req, res) => {
 });
 
 // Get a specific crash group with its crashes (admin auth required)
-app.get('/api/crashes/groups/:id', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/crashes/groups/:id', requireAdmin, (req, res) => {
     try {
         const groupId = req.params.id;
         const groups = loadCrashGroups();
@@ -2586,14 +2508,7 @@ app.get('/api/crashes/groups/:id', (req, res) => {
 });
 
 // Get crash analytics summary (admin auth required)
-app.get('/api/crashes/summary', (req, res) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    const expectedKey = process.env.ADMIN_RESET_KEY || 'smallspaces-reset-2025';
-
-    if (!adminKey || adminKey !== expectedKey) {
-        return res.status(403).json({ error: 'Invalid admin key' });
-    }
-
+app.get('/api/crashes/summary', requireAdmin, (req, res) => {
     try {
         let crashes = loadCrashesMetadata();
         crashes = applyFilters(crashes, req.query);
