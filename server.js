@@ -2,9 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs-extra');
 const path = require('path');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+
+// UUID format validation — prevents path traversal and injection via IDs
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUUID(id) {
+    return typeof id === 'string' && UUID_REGEX.test(id);
+}
 // Try to load Sharp, fallback if not available
 let sharp;
 try {
@@ -64,18 +71,19 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter);
 
-// Stricter rate limit for write endpoints
+// Stricter rate limit for write endpoints only (POST/DELETE, not GET)
 const writeLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 30,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many upload requests, please try again later' }
+    message: { error: 'Too many upload requests, please try again later' },
+    skip: (req) => req.method === 'GET'
 });
 app.use('/api/designs', writeLimiter);
 app.use('/api/crashes', writeLimiter);
 
-// Shared admin authentication middleware
+// Shared admin authentication middleware — uses timing-safe comparison to prevent side-channel attacks
 function requireAdmin(req, res, next) {
     const adminKey = req.headers['x-admin-key'];
     const expectedKey = process.env.ADMIN_RESET_KEY;
@@ -85,7 +93,14 @@ function requireAdmin(req, res, next) {
         return res.status(503).json({ error: 'Admin endpoints not configured' });
     }
 
-    if (!adminKey || adminKey !== expectedKey) {
+    if (!adminKey || typeof adminKey !== 'string') {
+        return res.status(403).json({ error: 'Invalid admin key' });
+    }
+
+    // Constant-time comparison prevents timing attacks that could leak the key
+    const keyBuffer = Buffer.from(adminKey);
+    const expectedBuffer = Buffer.from(expectedKey);
+    if (keyBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(keyBuffer, expectedBuffer)) {
         return res.status(403).json({ error: 'Invalid admin key' });
     }
 
@@ -251,7 +266,14 @@ async function compressAndSaveThumbnail(base64Data, filename) {
     
     try {
         const buffer = Buffer.from(base64Data, 'base64');
-        
+
+        // Guard against decompression bombs: check image dimensions before processing
+        const metadata = await sharp(buffer).metadata();
+        if (metadata.width > 4096 || metadata.height > 4096) {
+            console.warn(`Thumbnail rejected: dimensions ${metadata.width}x${metadata.height} exceed 4096px limit`);
+            return saveBase64File(base64Data, filename) ? filename : null;
+        }
+
         // Compress only (keep original resolution): 90% quality JPEG
         const compressedBuffer = await sharp(buffer)
             .jpeg({
@@ -313,12 +335,20 @@ function saveCrashGroups(groups) {
 }
 
 // Extract crash context from UE5 crash report ZIP
+// Includes ZIP bomb protection: limits individual entry sizes
+const MAX_ZIP_ENTRY_SIZE = 10 * 1024 * 1024; // 10 MB max per extracted entry
 function extractCrashContext(buffer) {
     if (!AdmZip) return null;
     try {
         const zip = new AdmZip(buffer);
         const entry = zip.getEntry('CrashContext.runtime-xml');
         if (!entry) return null;
+
+        // ZIP bomb protection: check decompressed size before extracting
+        if (entry.header.size > MAX_ZIP_ENTRY_SIZE) {
+            console.warn(`ZIP entry CrashContext.runtime-xml too large: ${entry.header.size} bytes, skipping`);
+            return null;
+        }
 
         const xml = entry.getData().toString('utf-8');
 
@@ -331,7 +361,7 @@ function extractCrashContext(buffer) {
         // Extract actual crash timestamp from minidump header
         let crash_time = null;
         const dmpEntry = zip.getEntry('UEMinidump.dmp');
-        if (dmpEntry) {
+        if (dmpEntry && dmpEntry.header.size <= MAX_ZIP_ENTRY_SIZE) {
             const dmpData = dmpEntry.getData();
             // MINIDUMP_HEADER: Signature(4) Version(4) NumberOfStreams(4) StreamDirectoryRva(4) CheckSum(4) TimeDateStamp(4)
             if (dmpData.length >= 24 && dmpData.toString('ascii', 0, 4) === 'MDMP') {
@@ -596,7 +626,10 @@ app.post('/api/designs', async (req, res) => {
             return res.status(400).json({ error: 'Author name must be under 100 characters' });
         }
 
-        // Use provided designId or generate new one
+        // Use provided designId or generate new one — validate format to prevent path traversal
+        if (designId && !isValidUUID(designId)) {
+            return res.status(400).json({ error: 'Invalid designId format (must be UUID)' });
+        }
         const finalDesignId = designId || uuidv4();
         const designFilename = `${finalDesignId}.sav`;
         const designPath = path.join(DESIGNS_DIR, designFilename);
@@ -706,8 +739,10 @@ app.get('/api/designs', (req, res) => {
         // Get Christmas event filter (true = only Christmas designs, false = exclude them, omit = all)
         const christmasEventFilter = req.query.christmasEvent;
 
-        // DEBUG: Log the actual query parameters received
-        console.log(`DEBUG - Query params: sort="${sortMode}", search="${searchQuery}", level="${levelFilter}", levelFilters=${levelFilters ? JSON.stringify(levelFilters) : 'null'}, fromDate="${fromDate}", christmasEvent="${christmasEventFilter}"`);
+        // Log request summary (not user-supplied data)
+        if (isDevelopment) {
+            console.log(`Browse request: sort=${sortMode}, hasSearch=${!!searchQuery}, hasLevel=${!!levelFilter}`);
+        }
 
         // Filter by search query if provided
         if (searchQuery && searchQuery.trim() !== '') {
@@ -794,7 +829,7 @@ app.get('/api/designs', (req, res) => {
 // Get top downloaded designs
 app.get('/api/designs/top', (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 3;
+        const limit = Math.min(parseInt(req.query.limit) || 3, 50);
         
         const allMetadata = loadMetadata();
         
@@ -825,6 +860,9 @@ app.get('/api/designs/top', (req, res) => {
 app.post('/api/designs/:id/download', (req, res) => {
     try {
         const designId = req.params.id;
+        if (!isValidUUID(designId)) {
+            return res.status(400).json({ error: 'Invalid design ID format' });
+        }
         const designPath = path.join(DESIGNS_DIR, `${designId}.sav`);
 
         if (!fs.existsSync(designPath)) {
@@ -879,6 +917,9 @@ app.post('/api/designs/:id/download', (req, res) => {
 app.post('/api/designs/:id/download/binary', (req, res) => {
     try {
         const designId = req.params.id;
+        if (!isValidUUID(designId)) {
+            return res.status(400).json({ error: 'Invalid design ID format' });
+        }
         const designPath = path.join(DESIGNS_DIR, `${designId}.sav`);
 
         if (!fs.existsSync(designPath)) {
@@ -932,40 +973,31 @@ app.post('/api/designs/:id/download/binary', (req, res) => {
 // Get metadata for multiple designs by IDs (no save data download)
 app.post('/api/designs/metadata', (req, res) => {
     try {
-        console.log('Received metadata request:', JSON.stringify(req.body));
-
         const { ids } = req.body;
 
         if (!ids) {
-            console.error('Missing ids field in request body');
             return res.status(400).json({ error: 'Missing ids field in request body' });
         }
 
         if (!Array.isArray(ids)) {
-            console.error('ids field is not an array:', typeof ids);
             return res.status(400).json({ error: 'ids field must be an array' });
         }
 
         if (ids.length === 0) {
-            console.log('Empty IDs array provided');
             return res.status(400).json({ error: 'Empty IDs array' });
         }
 
-        console.log(`Metadata request for ${ids.length} design(s): ${ids.join(', ')}`);
+        if (ids.length > 100) {
+            return res.status(400).json({ error: 'Too many IDs (max 100)' });
+        }
+
+        console.log(`Metadata request for ${ids.length} design(s)`);
 
         // Load all metadata
         const allMetadata = loadMetadata();
-        console.log(`Total designs in database: ${allMetadata.length}`);
-
-        // Log first few IDs from database for debugging
-        if (allMetadata.length > 0) {
-            console.log(`Sample IDs from database: ${allMetadata.slice(0, 3).map(d => d.id).join(', ')}`);
-        }
 
         // Filter to only the requested IDs
         const requestedMetadata = allMetadata.filter(design => ids.includes(design.id));
-
-        console.log(`Found ${requestedMetadata.length} matching designs out of ${ids.length} requested`);
 
         // Return metadata in same format as browse endpoint
         const designs = requestedMetadata.map(design => ({
@@ -981,14 +1013,11 @@ app.post('/api/designs/metadata', (req, res) => {
             christmas_event: design.christmas_event === true // Default to false if missing
         }));
 
-        console.log(`Returning metadata for ${designs.length} design(s)`);
-
         res.json({ designs });
 
     } catch (error) {
         console.error('Get metadata error:', error);
-        console.error('Error stack:', error.stack);
-        res.status(500).json({ error: 'Internal server error', details: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -996,7 +1025,15 @@ app.post('/api/designs/metadata', (req, res) => {
 app.post('/api/designs/:id/like', (req, res) => {
     try {
         const designId = req.params.id;
-        const { increment } = req.body; // 1 or -1
+        if (!isValidUUID(designId)) {
+            return res.status(400).json({ error: 'Invalid design ID format' });
+        }
+        const { increment } = req.body;
+
+        // Only allow +1 or -1 to prevent count manipulation
+        if (increment !== 1 && increment !== -1) {
+            return res.status(400).json({ error: 'increment must be 1 or -1' });
+        }
 
         const allMetadata = loadMetadata();
         const designIndex = allMetadata.findIndex(d => d.id === designId);
@@ -1051,40 +1088,11 @@ app.get('/api/thumbnails/:filename', (req, res) => {
     }
 });
 
-// Root route for browser
+// Root route — minimal info to avoid exposing attack surface
 app.get('/', (req, res) => {
     res.json({
         message: 'Small Spaces Design Server is running',
-        endpoints: {
-            designs: [
-                'POST /api/designs - Upload design',
-                'GET /api/designs?sort={date|downloads}&search={query}&level={levelPath}&levelFilters={JSON array}&fromDate={ISO8601}&christmasEvent={true|false} - Browse designs',
-                'POST /api/designs/:id/download - Download design (Base64)',
-                'POST /api/designs/:id/download/binary - Download design (Binary - FAST)',
-                'POST /api/designs/metadata - Get metadata for multiple designs by IDs',
-                'POST /api/designs/:id/like - Like/unlike design',
-                'DELETE /api/designs/:id - Delete design by ID'
-            ],
-            analytics: [
-                'POST /api/analytics/event - Track single event',
-                'POST /api/analytics/batch - Track multiple events',
-                'POST /api/analytics/session/start - Start session',
-                'POST /api/analytics/session/end - End session',
-                'GET /api/analytics/events - Query events (admin)',
-                'GET /api/analytics/sessions - List sessions (admin)',
-                'GET /api/analytics/summary - Dashboard summary (admin)',
-                'GET /api/analytics/event-names - Unique event names (admin)',
-                'DELETE /api/analytics/clear - Clear analytics data (admin)'
-            ],
-            admin: [
-                'GET /api/admin/export-censored - Export censored entries',
-                'POST /api/admin/import-corrections - Import corrections',
-                'POST /api/admin/repair-censored - Auto-repair censored text',
-                'DELETE /api/admin/reset - Clear all designs and metadata (requires admin key)',
-                'DELETE /api/admin/reset-analytics - Clear all analytics data (requires admin key)',
-                'GET /api/health - Health check'
-            ]
-        }
+        health: '/api/health'
     });
 });
 
@@ -1094,7 +1102,12 @@ app.get('/api/health', (req, res) => {
 });
 
 // Test image compression endpoint (development only)
-app.post('/api/test/compress', async (req, res) => {
+app.post('/api/test/compress', (req, res, next) => {
+    if (!isDevelopment) {
+        return res.status(403).json({ error: 'Test endpoints not available in production' });
+    }
+    next();
+}, async (req, res) => {
     try {
         const { imageData } = req.body;
         
@@ -1366,6 +1379,9 @@ app.post('/api/admin/restore-backup', requireAdmin, async (req, res) => {
 app.delete('/api/designs/:id', requireAdmin, (req, res) => {
     try {
         const designId = req.params.id;
+        if (!isValidUUID(designId)) {
+            return res.status(400).json({ error: 'Invalid design ID format' });
+        }
         const designPath = path.join(DESIGNS_DIR, `${designId}.sav`);
         const thumbnailPath = path.join(THUMBNAILS_DIR, `${designId}.png`);
 
@@ -1657,6 +1673,26 @@ app.post('/api/admin/repair-censored', requireAdmin, (req, res) => {
 // ANALYTICS API ENDPOINTS
 // ============================================
 
+// Validate and cap analytics properties to prevent oversized payloads
+const MAX_PROPERTIES_KEYS = 50;
+const MAX_PROPERTY_VALUE_LENGTH = 500;
+function sanitizeProperties(props) {
+    if (!props || typeof props !== 'object' || Array.isArray(props)) return {};
+    const sanitized = {};
+    const keys = Object.keys(props).slice(0, MAX_PROPERTIES_KEYS);
+    for (const key of keys) {
+        if (typeof key !== 'string' || key.length > 100) continue;
+        const val = props[key];
+        if (typeof val === 'string') {
+            sanitized[key] = val.slice(0, MAX_PROPERTY_VALUE_LENGTH);
+        } else if (typeof val === 'number' || typeof val === 'boolean') {
+            sanitized[key] = val;
+        }
+        // Drop nested objects, arrays, and other types
+    }
+    return sanitized;
+}
+
 // Track a single analytics event (no auth required - game clients send these)
 app.post('/api/analytics/event', (req, res) => {
     try {
@@ -1673,10 +1709,10 @@ app.post('/api/analytics/event', (req, res) => {
             id: uuidv4(),
             session_id: session_id || 'anonymous',
             event_name: event_name,
-            properties: properties || {},
+            properties: sanitizeProperties(properties),
             timestamp: new Date().toISOString(),
-            client_version: client_version || 'unknown',
-            platform: platform || 'unknown'
+            client_version: typeof client_version === 'string' ? client_version.slice(0, 50) : 'unknown',
+            platform: typeof platform === 'string' ? platform.slice(0, 50) : 'unknown'
         };
 
         const events = loadAnalyticsEvents();
@@ -1709,14 +1745,18 @@ app.post('/api/analytics/batch', (req, res) => {
         const processedEvents = [];
 
         for (const eventData of batchEvents) {
+            // Validate each event in the batch
+            if (!eventData.event_name || typeof eventData.event_name !== 'string') continue;
+            if (eventData.event_name.length > 200) continue;
+
             const event = {
                 id: uuidv4(),
                 session_id: eventData.session_id || session_id || 'anonymous',
                 event_name: eventData.event_name,
-                properties: eventData.properties || {},
+                properties: sanitizeProperties(eventData.properties),
                 timestamp: eventData.timestamp || new Date().toISOString(),
-                client_version: eventData.client_version || client_version || 'unknown',
-                platform: eventData.platform || platform || 'unknown'
+                client_version: typeof (eventData.client_version || client_version) === 'string' ? (eventData.client_version || client_version).slice(0, 50) : 'unknown',
+                platform: typeof (eventData.platform || platform) === 'string' ? (eventData.platform || platform).slice(0, 50) : 'unknown'
             };
             events.push(event);
             processedEvents.push(event.id);
@@ -1743,9 +1783,9 @@ app.post('/api/analytics/session/start', (req, res) => {
             id: uuidv4(),
             start_time: new Date().toISOString(),
             end_time: null,
-            client_version: client_version || 'unknown',
-            platform: platform || 'unknown',
-            metadata: metadata || {},
+            client_version: typeof client_version === 'string' ? client_version.slice(0, 50) : 'unknown',
+            platform: typeof platform === 'string' ? platform.slice(0, 50) : 'unknown',
+            metadata: sanitizeProperties(metadata),
             event_count: 0
         };
 
@@ -2267,6 +2307,9 @@ app.get('/api/crashes', requireAdmin, (req, res) => {
 app.get('/api/crashes/:id/download', requireAdmin, (req, res) => {
     try {
         const crashId = req.params.id;
+        if (!isValidUUID(crashId)) {
+            return res.status(400).json({ error: 'Invalid crash ID format' });
+        }
         const crashes = loadCrashesMetadata();
         const crash = crashes.find(c => c.id === crashId);
 
@@ -2296,6 +2339,9 @@ app.get('/api/crashes/:id/download', requireAdmin, (req, res) => {
 app.delete('/api/crashes/:id', requireAdmin, (req, res) => {
     try {
         const crashId = req.params.id;
+        if (!isValidUUID(crashId)) {
+            return res.status(400).json({ error: 'Invalid crash ID format' });
+        }
         const crashes = loadCrashesMetadata();
         const crashIndex = crashes.findIndex(c => c.id === crashId);
 
@@ -2428,8 +2474,14 @@ Return JSON only: {"root_cause": "...", "suggested_fix": "..."}`;
 });
 
 // Get crash type definitions
+const CRASH_CATEGORIES = [
+    'Shader Compilation', 'Out of VRAM', 'Out of RAM', 'GPU Crash',
+    'Render Hang', 'Thread Hang', 'Config Error', 'Access Violation',
+    'Shader Mismatch', 'Material Error', 'Threading Error', 'Intentional Crash',
+    'Out of Memory', 'Hang', 'Assertion', 'Fatal Error', 'Crash', 'Unknown'
+];
 app.get('/api/crashes/categories', (req, res) => {
-    res.json({ crash_types: CRASH_TYPE_MAP });
+    res.json({ categories: CRASH_CATEGORIES });
 });
 
 // Get crash groups (admin auth required)
@@ -2488,6 +2540,9 @@ app.get('/api/crashes/groups', requireAdmin, (req, res) => {
 app.get('/api/crashes/groups/:id', requireAdmin, (req, res) => {
     try {
         const groupId = req.params.id;
+        if (!isValidUUID(groupId)) {
+            return res.status(400).json({ error: 'Invalid group ID format' });
+        }
         const groups = loadCrashGroups();
         const group = groups.find(g => g.id === groupId);
 
