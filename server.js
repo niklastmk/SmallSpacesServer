@@ -134,46 +134,157 @@ function requireApiKey(req, res, next) {
     next();
 }
 
-// Serve analytics dashboard with auth gate — requires admin key cookie or query param to access
+// Serve analytics dashboard with login page
 const DASHBOARD_DIR = path.join(__dirname, 'dashboard', 'dist');
 if (fs.existsSync(DASHBOARD_DIR)) {
-    // Auth gate: first visit must provide ?key=<admin_key> to get a session cookie
-    const dashboardAuth = (req, res, next) => {
+    const LOGIN_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Small Spaces Admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0f1419;
+            color: #e7e9ea;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            background: #1a1f26;
+            border: 1px solid #2f3640;
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+            max-width: 380px;
+        }
+        .login-card h1 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .login-card p {
+            font-size: 14px;
+            color: #8b98a5;
+            margin-bottom: 24px;
+        }
+        .login-card input {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0f1419;
+            border: 1px solid #2f3640;
+            border-radius: 8px;
+            color: #e7e9ea;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .login-card input:focus { border-color: #5b9bd5; }
+        .login-card button {
+            width: 100%;
+            margin-top: 16px;
+            padding: 10px;
+            background: #5b9bd5;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .login-card button:hover { background: #4a8ac4; }
+        .error {
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: rgba(220, 53, 69, 0.15);
+            border: 1px solid rgba(220, 53, 69, 0.3);
+            border-radius: 6px;
+            color: #f87171;
+            font-size: 13px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <form class="login-card" method="POST" action="/admin/login">
+        <h1>Small Spaces</h1>
+        <p>Enter admin key to continue</p>
+        <input type="password" name="key" placeholder="Admin key" required autofocus>
+        <button type="submit">Log in</button>
+        <div class="error" id="error">Invalid admin key.</div>
+    </form>
+    <script>
+        if (new URLSearchParams(location.search).get('error') === '1') {
+            document.getElementById('error').style.display = 'block';
+        }
+    </script>
+</body>
+</html>`;
+
+    // Validate admin session cookie
+    function isValidAdminSession(req) {
         const expectedKey = process.env.ADMIN_RESET_KEY;
-        if (!expectedKey) {
-            return res.status(503).send('Admin not configured');
-        }
+        if (!expectedKey) return false;
+        const sessionKey = req.cookies?.admin_session;
+        if (!sessionKey || typeof sessionKey !== 'string') return false;
+        const keyBuffer = Buffer.from(sessionKey);
+        const expectedBuffer = Buffer.from(expectedKey);
+        return keyBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(keyBuffer, expectedBuffer);
+    }
 
-        // Check for key in query param (initial login) or cookie (subsequent requests)
-        const providedKey = req.query.key || req.cookies?.admin_session;
+    // POST /admin/login — validate key and set session cookie
+    app.post('/admin/login', (req, res) => {
+        const expectedKey = process.env.ADMIN_RESET_KEY;
+        if (!expectedKey) return res.status(503).send('Admin not configured');
 
-        // Allow static assets (JS/CSS) if they have a valid referer from /admin
-        const referer = req.headers.referer || '';
-        if (referer.includes('/admin') && (req.path.endsWith('.js') || req.path.endsWith('.css') || req.path.endsWith('.svg'))) {
-            return next();
-        }
-
+        const providedKey = req.body?.key;
         if (!providedKey || typeof providedKey !== 'string') {
-            return res.status(403).send('Access denied. Use /admin?key=YOUR_ADMIN_KEY to log in.');
+            return res.redirect('/admin/login?error=1');
         }
 
         const keyBuffer = Buffer.from(providedKey);
         const expectedBuffer = Buffer.from(expectedKey);
         if (keyBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(keyBuffer, expectedBuffer)) {
-            return res.status(403).send('Invalid admin key.');
+            return res.redirect('/admin/login?error=1');
         }
 
-        // If authenticated via query param, set cookie and redirect to clean URL
-        if (req.query.key) {
-            res.cookie('admin_session', providedKey, {
-                httpOnly: true,
-                secure: !isDevelopment,
-                sameSite: 'strict',
-                maxAge: 24 * 60 * 60 * 1000 // 24 hours
-            });
-            return res.redirect('/admin');
+        res.cookie('admin_session', providedKey, {
+            httpOnly: true,
+            secure: !isDevelopment,
+            sameSite: 'strict',
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        });
+        res.redirect('/admin');
+    });
+
+    // GET /admin/login — show login page
+    app.get('/admin/login', (req, res) => {
+        if (isValidAdminSession(req)) return res.redirect('/admin');
+        res.send(LOGIN_PAGE);
+    });
+
+    // GET /admin/logout — clear session
+    app.get('/admin/logout', (req, res) => {
+        res.clearCookie('admin_session');
+        res.redirect('/admin/login');
+    });
+
+    // Dashboard auth gate — redirect to login if no valid session
+    const dashboardAuth = (req, res, next) => {
+        // Allow static assets (JS/CSS/SVG) if they have a valid referer from /admin
+        const referer = req.headers.referer || '';
+        if (referer.includes('/admin') && (req.path.endsWith('.js') || req.path.endsWith('.css') || req.path.endsWith('.svg'))) {
+            return next();
         }
 
+        if (!isValidAdminSession(req)) {
+            return res.redirect('/admin/login');
+        }
         next();
     };
 
@@ -182,7 +293,7 @@ if (fs.existsSync(DASHBOARD_DIR)) {
     app.get('/admin/*', dashboardAuth, (req, res) => {
         res.sendFile(path.join(DASHBOARD_DIR, 'index.html'));
     });
-    console.log('Analytics dashboard enabled at /admin (auth-gated)');
+    console.log('Analytics dashboard enabled at /admin (login-gated)');
 }
 
 // Storage directories - use persistent volume on Railway Pro
