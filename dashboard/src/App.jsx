@@ -7,6 +7,7 @@ import EventsExplorer from './components/EventsExplorer'
 import SessionsList from './components/SessionsList'
 import EventBreakdown from './components/EventBreakdown'
 import CrashReports from './components/CrashReports'
+import FeaturedDesigns from './components/FeaturedDesigns'
 
 const styles = {
   container: {
@@ -186,9 +187,14 @@ function App() {
           Crash Reports
         </button>
         <button
-          style={{ ...styles.sectionBtn, borderRadius: '0 8px 8px 0', borderLeft: 'none', ...(section === 'analytics' ? styles.sectionBtnActive : {}) }}
+          style={{ ...styles.sectionBtn, borderLeft: 'none', ...(section === 'analytics' ? styles.sectionBtnActive : {}) }}
           onClick={() => setSection('analytics')}>
           Analytics
+        </button>
+        <button
+          style={{ ...styles.sectionBtn, borderRadius: '0 8px 8px 0', borderLeft: 'none', ...(section === 'featured' ? styles.sectionBtnActive : {}) }}
+          onClick={() => setSection('featured')}>
+          Featured
         </button>
       </div>
 
@@ -205,6 +211,8 @@ function App() {
       )}
 
       {section === 'crashes' && <CrashReports />}
+
+      {section === 'featured' && <FeaturedDesigns />}
 
       {section === 'analytics' && (
         <>

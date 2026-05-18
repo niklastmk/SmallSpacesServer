@@ -146,3 +146,20 @@ export async function getCrashSummary(filters = {}) {
   const qs = buildFilterParams(filters);
   return fetchWithAuth(`/api/crashes/summary${qs ? '?' + qs : ''}`);
 }
+
+// ============================================
+// FEATURED DESIGNS API
+// ============================================
+
+// Get current featured design IDs
+export async function getFeatured() {
+  return fetchWithAuth('/api/featured/admin');
+}
+
+// Replace featured design IDs (full overwrite)
+export async function setFeatured(ids) {
+  return fetchWithAuth('/api/featured/admin', {
+    method: 'POST',
+    body: JSON.stringify({ ids })
+  });
+}

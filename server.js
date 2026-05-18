@@ -1226,6 +1226,22 @@ app.get('/api/featured', requireApiKey, (req, res) => {
     }
 });
 
+// GET /api/featured/admin — admin-gated read of the same list (the public GET
+// is api-key gated, so the dashboard which uses admin auth needs its own read path).
+app.get('/api/featured/admin', requireAdmin, (req, res) => {
+    try {
+        if (!fs.existsSync(FEATURED_FILE)) {
+            return res.json({ ids: [] });
+        }
+        const raw = fs.readFileSync(FEATURED_FILE, 'utf8');
+        const ids = JSON.parse(raw);
+        res.json({ ids: Array.isArray(ids) ? ids : [] });
+    } catch (error) {
+        console.error('Featured admin fetch error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // POST /api/featured/admin — body: { ids: ["...", "..."] }. Replaces the
 // entire featured list. Admin-key gated.
 app.post('/api/featured/admin', requireAdmin, (req, res) => {
