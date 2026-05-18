@@ -311,6 +311,7 @@ const ANALYTICS_SESSIONS_FILE = path.join(ANALYTICS_DIR, 'sessions.json');
 const CRASHES_DIR = path.join(STORAGE_DIR, 'crashes');
 const CRASHES_METADATA_FILE = path.join(STORAGE_DIR, 'crashes_metadata.json');
 const CRASH_GROUPS_FILE = path.join(STORAGE_DIR, 'crash_groups.json');
+const FEATURED_FILE = path.join(STORAGE_DIR, 'featured.json');
 
 // Ensure storage directories exist
 try {
@@ -1195,6 +1196,55 @@ app.post('/api/designs/metadata', requireApiKey, (req, res) => {
 
     } catch (error) {
         console.error('Get metadata error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ============================================================================
+// Featured designs — remote-editable list of design IDs the game pulls on
+// startup to populate the Online Showcase / featured section without shipping
+// a game update. Stored as a JSON array of strings in storage/featured.json.
+// Player endpoint is GET (API-key gated); update is POST (admin-key gated).
+// ============================================================================
+
+// GET /api/featured — returns { ids: [...] }. Empty array if no file yet.
+app.get('/api/featured', requireApiKey, (req, res) => {
+    try {
+        if (!fs.existsSync(FEATURED_FILE)) {
+            return res.json({ ids: [] });
+        }
+        const raw = fs.readFileSync(FEATURED_FILE, 'utf8');
+        const ids = JSON.parse(raw);
+        if (!Array.isArray(ids)) {
+            console.error('featured.json is not an array — returning empty list');
+            return res.json({ ids: [] });
+        }
+        res.json({ ids });
+    } catch (error) {
+        console.error('Featured fetch error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/featured/admin — body: { ids: ["...", "..."] }. Replaces the
+// entire featured list. Admin-key gated.
+app.post('/api/featured/admin', requireAdmin, (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!Array.isArray(ids)) {
+            return res.status(400).json({ error: 'ids field must be an array of strings' });
+        }
+        if (ids.some(id => typeof id !== 'string')) {
+            return res.status(400).json({ error: 'all ids must be strings' });
+        }
+        if (ids.length > 200) {
+            return res.status(400).json({ error: 'too many ids (max 200)' });
+        }
+        fs.writeFileSync(FEATURED_FILE, JSON.stringify(ids, null, 2), 'utf8');
+        console.log(`Featured list updated — ${ids.length} id(s)`);
+        res.json({ ok: true, count: ids.length });
+    } catch (error) {
+        console.error('Featured update error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
