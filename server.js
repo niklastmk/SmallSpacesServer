@@ -478,6 +478,89 @@ async function compressAndSaveThumbnail(base64Data, filename) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Thumbnail image moderation (Azure AI Content Safety)
+// F0 free tier covers 5,000 images/month; current upload volume is well below.
+// Not configured (no endpoint/key) → moderation is skipped so the server keeps
+// working without an Azure resource. Set MODERATION_FAIL_CLOSED=1 to instead
+// reject thumbnail uploads whenever the check cannot run.
+// ---------------------------------------------------------------------------
+const MODERATION_ENDPOINT = (process.env.AZURE_CONTENT_SAFETY_ENDPOINT || '').replace(/\/+$/, '');
+const MODERATION_KEY = process.env.AZURE_CONTENT_SAFETY_KEY || '';
+const MODERATION_SEVERITY_THRESHOLD = parseInt(process.env.MODERATION_SEVERITY_THRESHOLD || '2', 10);
+const MODERATION_FAIL_CLOSED = process.env.MODERATION_FAIL_CLOSED === '1';
+const MODERATION_LOG_FILE = path.join(STORAGE_DIR, 'moderation_rejections.json');
+
+async function prepareImageForModeration(base64Data) {
+    // Azure Content Safety caps input at 2048x2048 / 4MB — downscale bigger
+    // images for the moderation call only (the stored thumbnail is untouched).
+    let buffer = Buffer.from(base64Data.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+    if (!sharp) return buffer;
+    try {
+        const metadata = await sharp(buffer).metadata();
+        if (metadata.width > 2048 || metadata.height > 2048 || buffer.length > 4 * 1024 * 1024) {
+            buffer = await sharp(buffer)
+                .resize(1024, 1024, { fit: 'inside' })
+                .jpeg({ quality: 85 })
+                .toBuffer();
+        }
+    } catch (error) {
+        console.warn('Moderation pre-resize failed, sending original image:', error.message);
+    }
+    return buffer;
+}
+
+async function moderateImage(base64Data) {
+    if (!MODERATION_ENDPOINT || !MODERATION_KEY) {
+        return { checked: false, flagged: false };
+    }
+    try {
+        const imageBuffer = await prepareImageForModeration(base64Data);
+        const response = await fetch(`${MODERATION_ENDPOINT}/contentsafety/image:analyze?api-version=2024-09-01`, {
+            method: 'POST',
+            headers: {
+                'Ocp-Apim-Subscription-Key': MODERATION_KEY,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                image: { content: imageBuffer.toString('base64') },
+                outputType: 'FourSeverityLevels'
+            }),
+            signal: AbortSignal.timeout(10000)
+        });
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => '');
+            console.error(`Image moderation API error ${response.status}: ${errorText.slice(0, 300)}`);
+            return { checked: false, flagged: false };
+        }
+        const result = await response.json();
+        const categories = (result.categoriesAnalysis || []).map(c => ({ category: c.category, severity: c.severity }));
+        const flaggedCategories = categories.filter(c => c.severity >= MODERATION_SEVERITY_THRESHOLD);
+        return {
+            checked: true,
+            flagged: flaggedCategories.length > 0,
+            categories,
+            reason: flaggedCategories.map(c => `${c.category}=${c.severity}`).join(', ')
+        };
+    } catch (error) {
+        console.error('Image moderation call failed:', error.message);
+        return { checked: false, flagged: false };
+    }
+}
+
+function logModerationRejection(entry) {
+    // Best-effort audit trail so rejected uploads can be reviewed (no image data stored)
+    try {
+        let log = [];
+        try { log = fs.readJsonSync(MODERATION_LOG_FILE); } catch (error) { /* first write */ }
+        log.push(entry);
+        if (log.length > 500) log = log.slice(-500);
+        fs.writeJsonSync(MODERATION_LOG_FILE, log, { spaces: 2 });
+    } catch (error) {
+        console.error('Failed to write moderation rejection log:', error);
+    }
+}
+
 // Crash report helper functions
 function loadCrashesMetadata() {
     try {
@@ -812,6 +895,28 @@ app.post('/api/designs', requireApiKey, async (req, res) => {
         const finalDesignId = designId || uuidv4();
         const designFilename = `${finalDesignId}.sav`;
         const designPath = path.join(DESIGNS_DIR, designFilename);
+
+        // Moderate the thumbnail before anything is stored. The game client
+        // treats any non-200 as its normal upload-failure path, so a rejection
+        // needs no dedicated error message.
+        if (thumbnail) {
+            const moderation = await moderateImage(thumbnail);
+            if (moderation.flagged) {
+                console.warn(`Upload rejected by image moderation: "${title}" by ${authorName || 'Anonymous'} (ID: ${finalDesignId}) — ${moderation.reason}`);
+                logModerationRejection({
+                    date: new Date().toISOString(),
+                    design_id: finalDesignId,
+                    title: title,
+                    author_name: authorName || 'Anonymous',
+                    categories: moderation.categories
+                });
+                return res.status(400).json({ error: 'Upload failed' });
+            }
+            if (!moderation.checked && MODERATION_FAIL_CLOSED) {
+                console.warn(`Upload rejected: moderation unavailable and MODERATION_FAIL_CLOSED is set (ID: ${finalDesignId})`);
+                return res.status(400).json({ error: 'Upload failed' });
+            }
+        }
 
         // Save design file (always overwrite)
         if (!saveBase64File(saveData, designPath)) {
@@ -3055,6 +3160,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Storage directory: ${STORAGE_DIR}`);
     console.log(`Persistent storage: ${process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'ENABLED' : 'LOCAL'}`);
     console.log(`Sharp compression: ${sharp ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Thumbnail moderation: ${MODERATION_ENDPOINT && MODERATION_KEY ? `ENABLED (severity >= ${MODERATION_SEVERITY_THRESHOLD})` : 'DISABLED (set AZURE_CONTENT_SAFETY_ENDPOINT + AZURE_CONTENT_SAFETY_KEY)'}`);
     console.log(`AI crash analysis: ${Anthropic && process.env.ANTHROPIC_API_KEY ? 'ENABLED' : 'DISABLED (set ANTHROPIC_API_KEY)'}`);
     console.log(`Server ready for connections`);
 });

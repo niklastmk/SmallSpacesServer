@@ -51,6 +51,15 @@ The server will run on http://localhost:3000
 - Thumbnails: `storage/thumbnails/`
 - Metadata: `storage/metadata.json`
 
+## Thumbnail Moderation
+
+Uploaded design thumbnails can be screened by **Azure AI Content Safety** before anything is stored. A flagged image rejects the whole upload with the same generic error the game already shows for failed uploads (the client treats any non-200 as upload failure — no new client work needed).
+
+- Setup: create a **Content Safety** resource in the Azure portal (**F0 free tier = 5,000 images/month**, hard-stop, no overage — well above current upload volume), then set `AZURE_CONTENT_SAFETY_ENDPOINT` and `AZURE_CONTENT_SAFETY_KEY` (see `.env.example`).
+- Unconfigured or unreachable → uploads pass through (fail-open) unless `MODERATION_FAIL_CLOSED=1`.
+- `MODERATION_SEVERITY_THRESHOLD` (default `2`): Azure rates each category (Hate/SelfHarm/Sexual/Violence) 0/2/4/6; any category at or above the threshold rejects.
+- Rejections are logged to `storage/moderation_rejections.json` (last 500, metadata only — no image data) and to the console for Railway logs.
+
 ## Features
 
 - File-based storage (no database required)
