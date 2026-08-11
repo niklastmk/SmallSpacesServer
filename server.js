@@ -490,6 +490,17 @@ const MODERATION_KEY = process.env.AZURE_CONTENT_SAFETY_KEY || '';
 const MODERATION_SEVERITY_THRESHOLD = parseInt(process.env.MODERATION_SEVERITY_THRESHOLD || '2', 10);
 const MODERATION_FAIL_CLOSED = process.env.MODERATION_FAIL_CLOSED === '1';
 const MODERATION_LOG_FILE = path.join(STORAGE_DIR, 'moderation_rejections.json');
+// Tiling: small explicit details (e.g. custom images in art frames) get diluted
+// at full-frame scale and score severity 0 — verified with a real incident image
+// that scored 0 whole but Sexual=6 on its 2x2 tiles. Each thumbnail is checked
+// as the full frame plus a COLSxROWS tile grid ('0' disables tiling).
+const MODERATION_TILE_GRID = (process.env.MODERATION_TILE_GRID || '2x2').toLowerCase();
+// The F0 free tier allows roughly 1 request/second, so calls are spaced out.
+const MODERATION_CALL_DELAY_MS = parseInt(process.env.MODERATION_CALL_DELAY_MS || '1100', 10);
+
+function sleepMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function prepareImageForModeration(base64Data) {
     // Azure Content Safety caps input at 2048x2048 / 4MB — downscale bigger
@@ -510,12 +521,36 @@ async function prepareImageForModeration(base64Data) {
     return buffer;
 }
 
-async function moderateImage(base64Data) {
-    if (!MODERATION_ENDPOINT || !MODERATION_KEY) {
-        return { checked: false, flagged: false };
-    }
+async function buildModerationPieces(base64Data) {
+    const fullBuffer = await prepareImageForModeration(base64Data);
+    const pieces = [{ label: 'full', buffer: fullBuffer }];
+    const gridMatch = MODERATION_TILE_GRID.match(/^(\d)x(\d)$/);
+    if (!sharp || !gridMatch) return pieces;
+    const cols = parseInt(gridMatch[1], 10);
+    const rows = parseInt(gridMatch[2], 10);
+    if (cols * rows <= 1) return pieces;
     try {
-        const imageBuffer = await prepareImageForModeration(base64Data);
+        const metadata = await sharp(fullBuffer).metadata();
+        const tileWidth = Math.floor(metadata.width / cols);
+        const tileHeight = Math.floor(metadata.height / rows);
+        if (tileWidth < 50 || tileHeight < 50) return pieces; // Azure minimum input size
+        for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+                const buffer = await sharp(fullBuffer)
+                    .extract({ left: col * tileWidth, top: row * tileHeight, width: tileWidth, height: tileHeight })
+                    .jpeg({ quality: 90 })
+                    .toBuffer();
+                pieces.push({ label: `tile ${col},${row}`, buffer });
+            }
+        }
+    } catch (error) {
+        console.warn('Moderation tiling failed, using full frame only:', error.message);
+    }
+    return pieces;
+}
+
+async function analyzeImagePiece(buffer) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
         const response = await fetch(`${MODERATION_ENDPOINT}/contentsafety/image:analyze?api-version=2024-09-01`, {
             method: 'POST',
             headers: {
@@ -523,25 +558,57 @@ async function moderateImage(base64Data) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                image: { content: imageBuffer.toString('base64') },
+                image: { content: buffer.toString('base64') },
                 outputType: 'FourSeverityLevels'
             }),
             signal: AbortSignal.timeout(10000)
         });
+        if (response.status === 429 && attempt === 1) {
+            await sleepMs(2000);
+            continue;
+        }
         if (!response.ok) {
             const errorText = await response.text().catch(() => '');
             console.error(`Image moderation API error ${response.status}: ${errorText.slice(0, 300)}`);
-            return { checked: false, flagged: false };
+            return { ok: false, status: response.status };
         }
         const result = await response.json();
-        const categories = (result.categoriesAnalysis || []).map(c => ({ category: c.category, severity: c.severity }));
-        const flaggedCategories = categories.filter(c => c.severity >= MODERATION_SEVERITY_THRESHOLD);
         return {
-            checked: true,
-            flagged: flaggedCategories.length > 0,
-            categories,
-            reason: flaggedCategories.map(c => `${c.category}=${c.severity}`).join(', ')
+            ok: true,
+            categories: (result.categoriesAnalysis || []).map(c => ({ category: c.category, severity: c.severity }))
         };
+    }
+    return { ok: false, status: 429 };
+}
+
+async function moderateImage(base64Data) {
+    if (!MODERATION_ENDPOINT || !MODERATION_KEY) {
+        return { checked: false, flagged: false };
+    }
+    try {
+        const pieces = await buildModerationPieces(base64Data);
+        let allChecked = true;
+        for (let i = 0; i < pieces.length; i++) {
+            if (i > 0 && MODERATION_CALL_DELAY_MS > 0) {
+                await sleepMs(MODERATION_CALL_DELAY_MS);
+            }
+            const verdict = await analyzeImagePiece(pieces[i].buffer);
+            if (!verdict.ok) {
+                allChecked = false;
+                if (verdict.status === 429) break; // rate/quota exhausted — don't stall the upload on retries
+                continue;
+            }
+            const flaggedCategories = verdict.categories.filter(c => c.severity >= MODERATION_SEVERITY_THRESHOLD);
+            if (flaggedCategories.length > 0) {
+                return {
+                    checked: true,
+                    flagged: true,
+                    categories: verdict.categories,
+                    reason: `${flaggedCategories.map(c => `${c.category}=${c.severity}`).join(', ')} [${pieces[i].label}]`
+                };
+            }
+        }
+        return { checked: allChecked, flagged: false };
     } catch (error) {
         console.error('Image moderation call failed:', error.message);
         return { checked: false, flagged: false };

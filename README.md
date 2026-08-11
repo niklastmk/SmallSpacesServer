@@ -55,9 +55,11 @@ The server will run on http://localhost:3000
 
 Uploaded design thumbnails can be screened by **Azure AI Content Safety** before anything is stored. A flagged image rejects the whole upload with the same generic error the game already shows for failed uploads (the client treats any non-200 as upload failure — no new client work needed).
 
-- Setup: create a **Content Safety** resource in the Azure portal (**F0 free tier = 5,000 images/month**, hard-stop, no overage — well above current upload volume), then set `AZURE_CONTENT_SAFETY_ENDPOINT` and `AZURE_CONTENT_SAFETY_KEY` (see `.env.example`).
+- Setup: create a **Content Safety** resource in the Azure portal, then set `AZURE_CONTENT_SAFETY_ENDPOINT` and `AZURE_CONTENT_SAFETY_KEY` (see `.env.example`).
+- **Tiled analysis**: each thumbnail is checked as the full frame plus a 2x2 tile grid (5 API calls). This is essential — a real incident thumbnail (small explicit posters inside a rendered room) scored severity 0 at full-frame scale but Sexual=6 on its tiles. `MODERATION_TILE_GRID` configures the grid (`0` = full frame only).
+- **Cost/tiers**: F0 free tier = 5,000 images/month (≈1,000 uploads at 5 calls each) with a hard stop — past the cap the check fails open until the month resets. S0 = $1.50 per 1,000 images (≈$12–18/month at current volume) with no cap; on S0, `MODERATION_CALL_DELAY_MS=0` removes the free-tier rate-limit pacing. Tier can be changed on the Azure resource without code changes.
 - Unconfigured or unreachable → uploads pass through (fail-open) unless `MODERATION_FAIL_CLOSED=1`.
-- `MODERATION_SEVERITY_THRESHOLD` (default `2`): Azure rates each category (Hate/SelfHarm/Sexual/Violence) 0/2/4/6; any category at or above the threshold rejects.
+- `MODERATION_SEVERITY_THRESHOLD` (default `2`): Azure rates each category (Hate/SelfHarm/Sexual/Violence) 0/2/4/6; any category at or above the threshold on any tile rejects.
 - Rejections are logged to `storage/moderation_rejections.json` (last 500, metadata only — no image data) and to the console for Railway logs.
 
 ## Features
