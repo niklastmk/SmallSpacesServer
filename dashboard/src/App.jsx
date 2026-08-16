@@ -8,6 +8,7 @@ import SessionsList from './components/SessionsList'
 import EventBreakdown from './components/EventBreakdown'
 import CrashReports from './components/CrashReports'
 import FeaturedDesigns from './components/FeaturedDesigns'
+import ArtistLinks from './components/ArtistLinks'
 
 const styles = {
   container: {
@@ -192,9 +193,14 @@ function App() {
           Analytics
         </button>
         <button
-          style={{ ...styles.sectionBtn, borderRadius: '0 8px 8px 0', borderLeft: 'none', ...(section === 'featured' ? styles.sectionBtnActive : {}) }}
+          style={{ ...styles.sectionBtn, borderLeft: 'none', ...(section === 'featured' ? styles.sectionBtnActive : {}) }}
           onClick={() => setSection('featured')}>
           Featured
+        </button>
+        <button
+          style={{ ...styles.sectionBtn, borderRadius: '0 8px 8px 0', borderLeft: 'none', ...(section === 'artists' ? styles.sectionBtnActive : {}) }}
+          onClick={() => setSection('artists')}>
+          Artist Links
         </button>
       </div>
 
@@ -213,6 +219,8 @@ function App() {
       {section === 'crashes' && <CrashReports />}
 
       {section === 'featured' && <FeaturedDesigns />}
+
+      {section === 'artists' && <ArtistLinks />}
 
       {section === 'analytics' && (
         <>

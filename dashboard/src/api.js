@@ -163,3 +163,29 @@ export async function setFeatured(ids) {
     body: JSON.stringify({ ids })
   });
 }
+
+// ============================================
+// ARTIST LINKS API
+// ============================================
+
+// Get the configured artist list
+export async function getArtists() {
+  return fetchWithAuth('/api/artists/admin');
+}
+
+// Replace the artist list (full overwrite)
+export async function setArtists(artists) {
+  return fetchWithAuth('/api/artists/admin', {
+    method: 'POST',
+    body: JSON.stringify({ artists })
+  });
+}
+
+// Get click stats
+export async function getArtistClicks({ days = 30, slug = null } = {}) {
+  const params = new URLSearchParams();
+  params.set('days', days);
+  if (slug) params.set('slug', slug);
+
+  return fetchWithAuth(`/api/artists/clicks?${params}`);
+}

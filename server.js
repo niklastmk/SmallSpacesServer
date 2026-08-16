@@ -313,6 +313,11 @@ const CRASHES_METADATA_FILE = path.join(STORAGE_DIR, 'crashes_metadata.json');
 const CRASH_GROUPS_FILE = path.join(STORAGE_DIR, 'crash_groups.json');
 const FEATURED_FILE = path.join(STORAGE_DIR, 'featured.json');
 
+// Artist link tracking (in-game partner links -> outbound redirect + click counts)
+const ARTISTS_FILE = path.join(STORAGE_DIR, 'artists.json');
+const ARTIST_CLICKS_FILE = path.join(STORAGE_DIR, 'artist_clicks.json');
+const CLICK_SALT_FILE = path.join(STORAGE_DIR, 'artist_click_salt.txt');
+
 // Ensure storage directories exist
 try {
     fs.ensureDirSync(DESIGNS_DIR);
@@ -370,6 +375,21 @@ try {
     }
 } catch (error) {
     console.error('Failed to initialize crash groups file:', error);
+}
+
+// Initialize artist link files if they don't exist
+try {
+    if (!fs.existsSync(ARTISTS_FILE)) {
+        fs.writeJsonSync(ARTISTS_FILE, []);
+        console.log('Artists file initialized');
+    }
+    if (!fs.existsSync(ARTIST_CLICKS_FILE)) {
+        fs.writeJsonSync(ARTIST_CLICKS_FILE, []);
+        console.log('Artist clicks file initialized');
+    }
+} catch (error) {
+    console.error('Failed to initialize artist link files:', error);
+    // Non-fatal - artist links are optional
 }
 
 // Helper functions
@@ -1433,6 +1453,400 @@ app.post('/api/featured/admin', requireAdmin, (req, res) => {
         res.json({ ok: true, count: ids.length });
     } catch (error) {
         console.error('Featured update error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ============================================
+// ARTIST LINKS — outbound redirect + click tracking
+// ============================================
+//
+// The game ships ONE stable link per artist: /go/<slug>?p=<placement>
+// This endpoint looks the slug up, appends UTM parameters, and 302s to the
+// artist's shop. Two reasons it exists instead of a hardcoded URL in the build:
+//   1. A link inside a shipped Steam build is permanent — this lets the
+//      destination change (rebrand, new shop, ended collab) without a patch.
+//   2. It is the only place we can count clicks ourselves.
+//
+// Privacy: no cookies are set, and raw IPs are never stored. The IP is folded
+// into a salted, DAILY-ROTATING hash used only to tell repeat clicks apart.
+
+const CLICK_UTM_SOURCE = 'smallspaces';
+const CLICK_UTM_MEDIUM = 'game';
+const CLICK_DEFAULT_CAMPAIGN = 'artist-showcase';
+const CLICK_DEDUPE_WINDOW_MS = 30 * 60 * 1000; // repeat click by same visitor inside this window is not "unique"
+const MAX_CLICK_RECORDS = 50000;               // oldest records are trimmed past this
+const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const MAX_ARTISTS = 100;
+
+// User agents that are link-preview bots, not players. Discord/Slack/Steam chat
+// all fetch a link the moment it is posted — without this the counts are fiction.
+const BOT_UA_PATTERNS = [
+    /bot/i, /crawl/i, /spider/i, /slurp/i, /preview/i, /curl/i, /wget/i,
+    /python-requests/i, /headless/i, /discord/i, /slack/i, /telegram/i,
+    /whatsapp/i, /facebookexternalhit/i, /embedly/i, /monitor/i, /uptime/i,
+    /scrapy/i, /okhttp/i, /go-http-client/i
+];
+
+function isBotUserAgent(ua) {
+    if (!ua || typeof ua !== 'string' || ua.length < 10) return true;
+    return BOT_UA_PATTERNS.some(re => re.test(ua));
+}
+
+// Salt for the visitor hash. Persisted so dedupe survives a redeploy; set
+// CLICK_HASH_SALT to control it explicitly. Never leaves the server.
+let cachedClickSalt = null;
+function getClickSalt() {
+    if (cachedClickSalt) return cachedClickSalt;
+    if (process.env.CLICK_HASH_SALT) {
+        cachedClickSalt = process.env.CLICK_HASH_SALT;
+        return cachedClickSalt;
+    }
+    try {
+        if (fs.existsSync(CLICK_SALT_FILE)) {
+            const stored = fs.readFileSync(CLICK_SALT_FILE, 'utf8').trim();
+            if (stored) {
+                cachedClickSalt = stored;
+                return cachedClickSalt;
+            }
+        }
+        const generated = crypto.randomBytes(32).toString('hex');
+        fs.writeFileSync(CLICK_SALT_FILE, generated, 'utf8');
+        cachedClickSalt = generated;
+    } catch (error) {
+        console.error('Could not persist click salt, using in-memory salt:', error.message);
+        cachedClickSalt = crypto.randomBytes(32).toString('hex');
+    }
+    return cachedClickSalt;
+}
+
+// One-way, daily-rotating visitor fingerprint. Not reversible to an IP, and not
+// linkable across days — enough to dedupe a double-click, nothing more.
+function visitorHash(req, slug) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '')
+        || req.socket?.remoteAddress
+        || 'unknown';
+    const day = new Date().toISOString().slice(0, 10);
+    return crypto.createHash('sha256')
+        .update(`${getClickSalt()}|${day}|${ip}|${slug}`)
+        .digest('hex')
+        .slice(0, 16);
+}
+
+function loadArtists() {
+    try {
+        const list = fs.readJsonSync(ARTISTS_FILE);
+        return Array.isArray(list) ? list : [];
+    } catch (error) {
+        console.error('Error loading artists:', error);
+        return [];
+    }
+}
+
+function saveArtists(artists) {
+    fs.writeJsonSync(ARTISTS_FILE, artists, { spaces: 2 });
+}
+
+function loadArtistClicks() {
+    try {
+        const list = fs.readJsonSync(ARTIST_CLICKS_FILE);
+        return Array.isArray(list) ? list : [];
+    } catch (error) {
+        console.error('Error loading artist clicks:', error);
+        return [];
+    }
+}
+
+function saveArtistClicks(clicks) {
+    try {
+        fs.writeJsonSync(ARTIST_CLICKS_FILE, clicks, { spaces: 2 });
+    } catch (error) {
+        console.error('Error saving artist clicks:', error);
+    }
+}
+
+// Placement = which in-game screen the button was on. Kept to a strict charset
+// because it is echoed into the destination URL as utm_content.
+function sanitizePlacement(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40);
+    return cleaned;
+}
+
+function buildDestinationUrl(artist, placement, clickId) {
+    const url = new URL(artist.destination);
+    url.searchParams.set('utm_source', CLICK_UTM_SOURCE);
+    url.searchParams.set('utm_medium', CLICK_UTM_MEDIUM);
+    url.searchParams.set('utm_campaign', artist.utm_campaign || CLICK_DEFAULT_CAMPAIGN);
+    if (placement) url.searchParams.set('utm_content', placement);
+    url.searchParams.set('ss_click', clickId);
+    return url.toString();
+}
+
+// Validate an incoming artist list. The destination check is load-bearing:
+// /go/:slug is a redirect, so an unvalidated destination would turn it into an
+// open redirect usable for phishing.
+function validateArtists(list) {
+    if (!Array.isArray(list)) return { ok: false, error: 'artists must be an array' };
+    if (list.length > MAX_ARTISTS) return { ok: false, error: `too many artists (max ${MAX_ARTISTS})` };
+
+    const seen = new Set();
+    const cleaned = [];
+
+    for (const entry of list) {
+        if (!entry || typeof entry !== 'object') return { ok: false, error: 'each artist must be an object' };
+
+        const slug = String(entry.slug || '').trim().toLowerCase();
+        if (!SLUG_REGEX.test(slug)) {
+            return { ok: false, error: `invalid slug "${entry.slug}" (lowercase letters, numbers and dashes, max 32)` };
+        }
+        if (seen.has(slug)) return { ok: false, error: `duplicate slug "${slug}"` };
+        seen.add(slug);
+
+        const destination = String(entry.destination || '').trim();
+        let parsed;
+        try {
+            parsed = new URL(destination);
+        } catch {
+            return { ok: false, error: `"${slug}": destination is not a valid URL` };
+        }
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+            return { ok: false, error: `"${slug}": destination must be http or https` };
+        }
+
+        const name = String(entry.name || '').trim().slice(0, 120);
+        const campaign = String(entry.utm_campaign || '').trim().slice(0, 60)
+            .toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+        cleaned.push({
+            slug,
+            name: name || slug,
+            destination: parsed.toString(),
+            active: entry.active !== false,
+            utm_campaign: campaign || CLICK_DEFAULT_CAMPAIGN
+        });
+    }
+
+    return { ok: true, artists: cleaned };
+}
+
+function recordArtistClick({ slug, placement, clickId, visitor, bot }) {
+    const clicks = loadArtistClicks();
+    const now = Date.now();
+
+    // "Unique" = first click from this visitor for this artist in the window.
+    const isRepeat = clicks.some(c =>
+        c.visitor === visitor &&
+        c.slug === slug &&
+        (now - new Date(c.timestamp).getTime()) < CLICK_DEDUPE_WINDOW_MS
+    );
+
+    clicks.push({
+        id: clickId,
+        slug,
+        placement: placement || 'unknown',
+        timestamp: new Date().toISOString(),
+        visitor,
+        bot: !!bot,
+        unique: !bot && !isRepeat
+    });
+
+    // Trim oldest first so the file cannot grow without bound.
+    const trimmed = clicks.length > MAX_CLICK_RECORDS
+        ? clicks.slice(clicks.length - MAX_CLICK_RECORDS)
+        : clicks;
+
+    saveArtistClicks(trimmed);
+}
+
+const LINK_UNAVAILABLE_PAGE = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Link unavailable</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1419;color:#e7e9ea;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px}
+h1{font-size:20px;font-weight:600;margin:0 0 8px}p{color:#8b98a5;font-size:14px;margin:0;line-height:1.6}
+</style></head>
+<body><div><h1>This link is no longer available</h1>
+<p>The page you were heading to has moved or the collaboration has ended.</p></div></body></html>`;
+
+// Per-visitor limit on the redirect. Keyed off the forwarded IP rather than the
+// socket IP because on Railway every request arrives from the same proxy —
+// without this the limit would be shared by all players at once.
+const goLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+        const forwarded = req.headers['x-forwarded-for'];
+        return (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '')
+            || req.socket?.remoteAddress
+            || 'unknown';
+    },
+    validate: { xForwardedForHeader: false },
+    message: 'Too many requests'
+});
+
+// GET /go/:slug?p=<placement> — the link that ships in the game.
+app.get('/go/:slug', goLimiter, (req, res) => {
+    // Never let a cache or the browser skip a hop: we must see every click, and
+    // a cached 301 would pin the destination forever on that machine.
+    res.set('Cache-Control', 'no-store, max-age=0');
+
+    const slug = String(req.params.slug || '').trim().toLowerCase();
+    const artist = loadArtists().find(a => a.slug === slug);
+
+    if (!artist || artist.active === false) {
+        console.warn(`Artist link miss: "${slug}" (${artist ? 'inactive' : 'unknown'})`);
+        return res.status(404).send(LINK_UNAVAILABLE_PAGE);
+    }
+
+    const placement = sanitizePlacement(req.query.p);
+    const clickId = crypto.randomBytes(4).toString('hex');
+
+    let target;
+    try {
+        target = buildDestinationUrl(artist, placement, clickId);
+    } catch (error) {
+        console.error(`Artist link "${slug}" has an unusable destination:`, error.message);
+        return res.status(500).send(LINK_UNAVAILABLE_PAGE);
+    }
+
+    // Redirect FIRST, count after. A storage hiccup must never leave a player
+    // staring at an error page instead of the shop.
+    res.redirect(302, target);
+
+    setImmediate(() => {
+        try {
+            const bot = isBotUserAgent(req.headers['user-agent']);
+            recordArtistClick({
+                slug,
+                placement,
+                clickId,
+                visitor: visitorHash(req, slug),
+                bot
+            });
+            console.log(`Artist click: ${slug} (${placement || 'no placement'})${bot ? ' [bot]' : ''}`);
+        } catch (error) {
+            console.error('Failed to record artist click:', error);
+        }
+    });
+});
+
+// GET /api/artists/admin — the artist list, for the dashboard editor.
+app.get('/api/artists/admin', requireAdmin, (req, res) => {
+    try {
+        res.json({ artists: loadArtists() });
+    } catch (error) {
+        console.error('Artists fetch error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/artists/admin — body: { artists: [...] }. Replaces the whole list.
+app.post('/api/artists/admin', requireAdmin, (req, res) => {
+    try {
+        const result = validateArtists(req.body?.artists);
+        if (!result.ok) {
+            return res.status(400).json({ error: result.error });
+        }
+        saveArtists(result.artists);
+        console.log(`Artist list updated — ${result.artists.length} artist(s)`);
+        res.json({ ok: true, count: result.artists.length, artists: result.artists });
+    } catch (error) {
+        console.error('Artists update error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/artists/clicks?days=30&slug=leah — click stats for the dashboard.
+// Bot hits are counted separately and excluded from every headline number, so
+// the totals stay honest and still auditable.
+app.get('/api/artists/clicks', requireAdmin, (req, res) => {
+    try {
+        const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+        const slugFilter = typeof req.query.slug === 'string' ? req.query.slug.toLowerCase() : '';
+
+        const artists = loadArtists();
+        const all = loadArtistClicks().filter(c => !slugFilter || c.slug === slugFilter);
+        const human = all.filter(c => !c.bot);
+
+        const now = Date.now();
+        const dayMs = 24 * 60 * 60 * 1000;
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const since = (n) => now - (n * dayMs);
+        const at = (c) => new Date(c.timestamp).getTime();
+
+        const totals = {
+            today: human.filter(c => c.timestamp.slice(0, 10) === todayKey).length,
+            last_7_days: human.filter(c => at(c) >= since(7)).length,
+            last_30_days: human.filter(c => at(c) >= since(30)).length,
+            total: human.length,
+            unique_total: human.filter(c => c.unique).length,
+            bots_filtered: all.length - human.length
+        };
+
+        // Zero-filled daily series so the chart has no gaps.
+        const buckets = new Map();
+        for (let i = days - 1; i >= 0; i--) {
+            buckets.set(new Date(now - (i * dayMs)).toISOString().slice(0, 10), 0);
+        }
+        for (const c of human) {
+            const key = c.timestamp.slice(0, 10);
+            if (buckets.has(key)) buckets.set(key, buckets.get(key) + 1);
+        }
+        const per_day = Array.from(buckets, ([date, count]) => ({ date, count }));
+
+        const countFor = (list, pick) => {
+            const map = new Map();
+            for (const c of list) map.set(pick(c), (map.get(pick(c)) || 0) + 1);
+            return map;
+        };
+
+        const bySlug = countFor(human, c => c.slug);
+        const bySlugRecent = countFor(human.filter(c => at(c) >= since(7)), c => c.slug);
+        const bySlugUnique = countFor(human.filter(c => c.unique), c => c.slug);
+
+        // Every configured artist appears, including ones with zero clicks —
+        // "no clicks yet" and "not set up" look identical otherwise.
+        const per_artist = artists
+            .filter(a => !slugFilter || a.slug === slugFilter)
+            .map(a => ({
+                slug: a.slug,
+                name: a.name,
+                destination: a.destination,
+                active: a.active !== false,
+                total: bySlug.get(a.slug) || 0,
+                last_7_days: bySlugRecent.get(a.slug) || 0,
+                unique: bySlugUnique.get(a.slug) || 0
+            }))
+            .sort((x, y) => y.total - x.total);
+
+        // Clicks whose slug is no longer configured still show up here so a
+        // removed artist's history is not silently dropped from the totals.
+        for (const [slug, total] of bySlug) {
+            if (!per_artist.some(a => a.slug === slug)) {
+                per_artist.push({
+                    slug, name: `${slug} (removed)`, destination: '', active: false,
+                    total, last_7_days: bySlugRecent.get(slug) || 0, unique: bySlugUnique.get(slug) || 0
+                });
+            }
+        }
+
+        const per_placement = Array.from(countFor(human, c => `${c.slug}|${c.placement}`))
+            .map(([key, count]) => {
+                const [slug, placement] = key.split('|');
+                return { slug, placement, count };
+            })
+            .sort((x, y) => y.count - x.count);
+
+        res.json({ range_days: days, totals, per_day, per_artist, per_placement });
+
+    } catch (error) {
+        console.error('Artist clicks error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -3229,6 +3643,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Sharp compression: ${sharp ? 'ENABLED' : 'DISABLED'}`);
     console.log(`Thumbnail moderation: ${MODERATION_ENDPOINT && MODERATION_KEY ? `ENABLED (severity >= ${MODERATION_SEVERITY_THRESHOLD})` : 'DISABLED (set AZURE_CONTENT_SAFETY_ENDPOINT + AZURE_CONTENT_SAFETY_KEY)'}`);
     console.log(`AI crash analysis: ${Anthropic && process.env.ANTHROPIC_API_KEY ? 'ENABLED' : 'DISABLED (set ANTHROPIC_API_KEY)'}`);
+    console.log(`Artist links: ${loadArtists().filter(a => a.active !== false).length} active at /go/<slug>`);
     console.log(`Server ready for connections`);
 });
 
