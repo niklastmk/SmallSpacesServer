@@ -64,27 +64,41 @@ app.use(cookieParser());
 app.use(express.json({ limit: '50mb' })); // Large limit for save data + thumbnails
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Rate limiting — general API
+// The player's IP. On Railway every request arrives from a proxy, so the socket
+// IP is the proxy's and is shared by many players. Railway puts the player's IP
+// first in X-Forwarded-For; a value the client sends itself does not replace it
+// (checked against production, 19 October 2026).
+function clientIp(req) {
+    const forwarded = req.headers['x-forwarded-for'];
+    return (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '')
+        || req.socket?.remoteAddress
+        || 'unknown';
+}
+
+// Rate limiting — general API, per player
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 300,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: clientIp,
+    validate: { xForwardedForHeader: false },
     message: { error: 'Too many requests, please try again later' }
 });
 app.use('/api/', apiLimiter);
 
-// Stricter rate limit for write endpoints only (POST/DELETE, not GET)
-const writeLimiter = rateLimit({
+// Stricter per-player limit for uploads only: new designs and crash reports.
+// Downloads, metadata lookups and likes are POSTs too, but only count
+// towards the general limit.
+const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 30,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many upload requests, please try again later' },
-    skip: (req) => req.method === 'GET'
+    keyGenerator: clientIp,
+    validate: { xForwardedForHeader: false },
+    message: { error: 'Too many upload requests, please try again later' }
 });
-app.use('/api/designs', writeLimiter);
-app.use('/api/crashes', writeLimiter);
 
 // Shared admin authentication middleware — uses timing-safe comparison to prevent side-channel attacks
 function requireAdmin(req, res, next) {
@@ -954,7 +968,7 @@ function categorizeAndGroupCrash(crashId) {
 // API Routes
 
 // Upload design
-app.post('/api/designs', requireApiKey, async (req, res) => {
+app.post('/api/designs', uploadLimiter, requireApiKey, async (req, res) => {
     try {
         const { designId, title, description, authorName, level, saveData, thumbnail, christmasEvent } = req.body;
 
@@ -1523,10 +1537,7 @@ function getClickSalt() {
 // One-way, daily-rotating visitor fingerprint. Not reversible to an IP, and not
 // linkable across days — enough to dedupe a double-click, nothing more.
 function visitorHash(req, slug) {
-    const forwarded = req.headers['x-forwarded-for'];
-    const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '')
-        || req.socket?.remoteAddress
-        || 'unknown';
+    const ip = clientIp(req);
     const day = new Date().toISOString().slice(0, 10);
     return crypto.createHash('sha256')
         .update(`${getClickSalt()}|${day}|${ip}|${slug}`)
@@ -1672,20 +1683,13 @@ h1{font-size:20px;font-weight:600;margin:0 0 8px}p{color:#8b98a5;font-size:14px;
 <body><div><h1>This link is no longer available</h1>
 <p>The page you were heading to has moved or the collaboration has ended.</p></div></body></html>`;
 
-// Per-visitor limit on the redirect. Keyed off the forwarded IP rather than the
-// socket IP because on Railway every request arrives from the same proxy —
-// without this the limit would be shared by all players at once.
+// Per-visitor limit on the redirect, keyed on the player's IP (see clientIp).
 const goLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => {
-        const forwarded = req.headers['x-forwarded-for'];
-        return (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '')
-            || req.socket?.remoteAddress
-            || 'unknown';
-    },
+    keyGenerator: clientIp,
     validate: { xForwardedForHeader: false },
     message: 'Too many requests'
 });
@@ -3021,7 +3025,7 @@ app.delete('/api/admin/reset-analytics', requireAdmin, (req, res) => {
 // ============================================
 
 // Upload crash report (no auth required - game clients send these)
-app.post('/api/crashes', requireApiKey, (req, res) => {
+app.post('/api/crashes', uploadLimiter, requireApiKey, (req, res) => {
     try {
         const { crashData, filename, sessionId, errorMessage, metadata } = req.body;
 
