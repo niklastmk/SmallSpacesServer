@@ -75,10 +75,12 @@ function clientIp(req) {
         || 'unknown';
 }
 
-// Rate limiting — general API, per player
+// Rate limiting — general API, per player. Each browse page loads about 21
+// thumbnails and analytics sends a batch up to every 10 s, so one busy player
+// can pass 300 requests in 15 minutes; 1000 leaves room for that.
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 300,
+    max: 1000,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: clientIp,
