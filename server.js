@@ -78,6 +78,16 @@ function clientIp(req) {
 // Rate limiting — general API, per player. Each browse page loads about 21
 // thumbnails and analytics sends a batch up to every 10 s, so one busy player
 // can pass 300 requests in 15 minutes; 1000 leaves room for that.
+//
+// Thumbnails are counted on their own (TD-SERVER-472). The game downloads its
+// Showcase thumbnails again on every visit, and how many depends on the player:
+// 3 to 176 requests per visit (production, 16 and 17 November 2026). Counted
+// together, five visits of 176 used up the 1000 and that player's likes, lists,
+// search and downloads were refused until the window ended.
+function isThumbnailRequest(req) {
+    return req.method === 'GET' && req.originalUrl.startsWith('/api/thumbnails/');
+}
+
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 1000,
@@ -85,9 +95,23 @@ const apiLimiter = rateLimit({
     legacyHeaders: false,
     keyGenerator: clientIp,
     validate: { xForwardedForHeader: false },
+    skip: isThumbnailRequest,
     message: { error: 'Too many requests, please try again later' }
 });
 app.use('/api/', apiLimiter);
+
+// Thumbnails only, per player: room for about 34 such Showcase visits in
+// 15 minutes. Reaching it leaves cards without a picture and nothing else.
+const thumbnailLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 6000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: clientIp,
+    validate: { xForwardedForHeader: false },
+    message: { error: 'Too many requests, please try again later' }
+});
+app.use('/api/thumbnails/', thumbnailLimiter);
 
 // Stricter per-player limit for uploads only: new designs and crash reports.
 // Downloads, metadata lookups and likes are POSTs too, but only count
