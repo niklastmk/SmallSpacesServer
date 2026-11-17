@@ -346,6 +346,10 @@ const METADATA_FILE = path.join(STORAGE_DIR, 'metadata.json');
 const ANALYTICS_DIR = path.join(STORAGE_DIR, 'analytics');
 const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, 'events.json');
 const ANALYTICS_SESSIONS_FILE = path.join(ANALYTICS_DIR, 'sessions.json');
+// New analytics is appended to these, one JSON object per line (TD-SERVER-473).
+// events.json and sessions.json above stay as the history from before.
+const ANALYTICS_EVENTS_LOG = path.join(ANALYTICS_DIR, 'events.ndjson');
+const ANALYTICS_SESSIONS_LOG = path.join(ANALYTICS_DIR, 'sessions.ndjson');
 
 // Crash reports storage
 const CRASHES_DIR = path.join(STORAGE_DIR, 'crashes');
@@ -391,6 +395,8 @@ try {
         fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
         console.log('Analytics sessions file initialized');
     }
+    closeAnalyticsLogLine(ANALYTICS_EVENTS_LOG);
+    closeAnalyticsLogLine(ANALYTICS_SESSIONS_LOG);
 } catch (error) {
     console.error('Failed to initialize analytics files:', error);
     // Non-fatal - analytics is optional
@@ -461,39 +467,201 @@ function saveBase64File(base64Data, filename) {
     }
 }
 
-// Analytics helper functions
+// Analytics storage (TD-SERVER-473)
+//
+// The routes the game calls (event, batch, session start, session end) never read
+// or rewrite a whole file. Each new event or session is appended as one JSON line
+// to events.ndjson / sessions.ndjson without holding up other requests. Before,
+// every call read, parsed and rewrote the whole of events.json or sessions.json
+// synchronously, and nothing else was answered for about two seconds.
+//
+// events.json and sessions.json are the history from before and are only read.
+// sessions.ndjson holds two kinds of lines: a session as it started, and
+// { "ended": <session id>, "end_time", "event_count" } when it ended.
+// The admin routes read the history plus the log (slow, as before).
+
+// One analytics write at a time, in the order asked for, so two appends never
+// mix their lines and a clear or a prune cannot run in the middle of one.
+let analyticsWriteChain = Promise.resolve();
+function queueAnalyticsWrite(task) {
+    const result = analyticsWriteChain.then(task);
+    analyticsWriteChain = result.catch(() => {});
+    return result;
+}
+
+function appendAnalyticsLines(file, records) {
+    if (records.length === 0) return Promise.resolve();
+    const text = records.map(record => JSON.stringify(record) + '\n').join('');
+    return queueAnalyticsWrite(() => fs.appendFile(file, text));
+}
+
+// A process stopped in the middle of an append can leave a last line without
+// its line end. Close that line at startup, so the next record starts on a line
+// of its own; readers skip the broken one.
+function closeAnalyticsLogLine(file) {
+    if (!fs.existsSync(file)) return;
+    const size = fs.statSync(file).size;
+    if (size === 0) return;
+    const fd = fs.openSync(file, 'r');
+    const last = Buffer.alloc(1);
+    try {
+        fs.readSync(fd, last, 0, 1, size - 1);
+    } finally {
+        fs.closeSync(fd);
+    }
+    if (last[0] !== 0x0A) {
+        fs.appendFileSync(file, '\n');
+        console.warn(`Analytics log ${path.basename(file)} ended in an unfinished line; closed it`);
+    }
+}
+
+// Reads a log line by line from its bytes, so a log longer than Node's longest
+// string can still be read. A line that is not a JSON object is skipped and
+// counted. With `strict`, a log that cannot be read throws instead of looking empty.
+function readAnalyticsLog(file, strict = false) {
+    let data;
+    try {
+        data = fs.readFileSync(file);
+    } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        if (strict) throw error;
+        console.error(`Error loading analytics log ${path.basename(file)}:`, error);
+        return [];
+    }
+
+    const records = [];
+    let skipped = 0;
+    let start = 0;
+    while (start < data.length) {
+        let end = data.indexOf(0x0A, start);
+        if (end === -1) end = data.length;
+        if (end > start) {
+            try {
+                const record = JSON.parse(data.toString('utf8', start, end));
+                if (record && typeof record === 'object') {
+                    records.push(record);
+                } else {
+                    skipped++;
+                }
+            } catch (error) {
+                skipped++;
+            }
+        }
+        start = end + 1;
+    }
+    if (skipped > 0) {
+        console.error(`Analytics log ${path.basename(file)}: ${skipped} unreadable line(s) skipped`);
+    }
+    return records;
+}
+
+// Reads events.json or sessions.json. With `strict`, a file that cannot be read
+// throws instead of looking empty (used before anything is deleted).
+function readAnalyticsHistory(file, strict = false) {
+    try {
+        const history = fs.readJsonSync(file);
+        if (!Array.isArray(history)) throw new Error(`${path.basename(file)} is not a list`);
+        return history;
+    } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        if (strict) throw error;
+        console.error(`Error loading analytics history ${path.basename(file)}:`, error);
+        return [];
+    }
+}
+
+// Replaces a file through a temporary file and a rename, so a failed write
+// leaves the old file as it was.
+function replaceAnalyticsFile(file, write) {
+    const temporary = file + '.tmp';
+    try {
+        write(temporary);
+        fs.renameSync(temporary, file);
+    } catch (error) {
+        fs.removeSync(temporary);
+        throw error;
+    }
+}
+
+function writeAnalyticsLog(file, records) {
+    const fd = fs.openSync(file, 'w');
+    try {
+        for (let i = 0; i < records.length; i += 1000) {
+            fs.writeSync(fd, records.slice(i, i + 1000).map(record => JSON.stringify(record) + '\n').join(''));
+        }
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
+// All events: the history and the log. For admin routes only.
 function loadAnalyticsEvents() {
-    try {
-        return fs.readJsonSync(ANALYTICS_EVENTS_FILE);
-    } catch (error) {
-        console.error('Error loading analytics events:', error);
-        return [];
-    }
+    return readAnalyticsHistory(ANALYTICS_EVENTS_FILE).concat(readAnalyticsLog(ANALYTICS_EVENTS_LOG));
 }
 
-function saveAnalyticsEvents(events) {
-    try {
-        fs.writeJsonSync(ANALYTICS_EVENTS_FILE, events, { spaces: 2 });
-    } catch (error) {
-        console.error('Error saving analytics events:', error);
-    }
-}
-
+// All sessions: the history and the sessions started in the log, each with its
+// end from the log if it has one. An end without a session is ignored.
+// For admin routes only.
 function loadAnalyticsSessions() {
-    try {
-        return fs.readJsonSync(ANALYTICS_SESSIONS_FILE);
-    } catch (error) {
-        console.error('Error loading analytics sessions:', error);
-        return [];
+    const sessions = readAnalyticsHistory(ANALYTICS_SESSIONS_FILE);
+    const ends = new Map();
+    for (const record of readAnalyticsLog(ANALYTICS_SESSIONS_LOG)) {
+        if (typeof record.ended === 'string') {
+            ends.set(record.ended, record);
+        } else if (typeof record.id === 'string') {
+            sessions.push(record);
+        }
     }
+    if (ends.size > 0) {
+        for (const session of sessions) {
+            const end = ends.get(session.id);
+            if (end) {
+                session.end_time = end.end_time;
+                session.event_count = end.event_count;
+            }
+        }
+    }
+    return sessions;
 }
 
-function saveAnalyticsSessions(sessions) {
-    try {
-        fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, sessions, { spaces: 2 });
-    } catch (error) {
-        console.error('Error saving analytics sessions:', error);
+// Empties the history and the logs.
+function clearAnalyticsStore() {
+    return queueAnalyticsWrite(() => {
+        fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
+        fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
+        fs.removeSync(ANALYTICS_EVENTS_LOG);
+        fs.removeSync(ANALYTICS_SESSIONS_LOG);
+        liveAnalyticsSessions.clear();
+    });
+}
+
+// The sessions this process has seen, so that ending one needs no file: the
+// session as it started (when it started since this process did) and how many of
+// its events have arrived. After a restart the count only covers the events since
+// the restart. Oldest entries are dropped after three days or above 50,000.
+const LIVE_SESSION_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+const LIVE_SESSION_MAX_COUNT = 50000;
+const liveAnalyticsSessions = new Map(); // session id -> { session, events, seen }
+
+function liveAnalyticsSession(sessionId) {
+    let live = liveAnalyticsSessions.get(sessionId);
+    if (!live) {
+        live = { session: null, events: 0, seen: Date.now() };
+        liveAnalyticsSessions.set(sessionId, live);
+
+        // A Map keeps the order of insertion, so the oldest entries come first.
+        const cutoff = Date.now() - LIVE_SESSION_MAX_AGE_MS;
+        for (const [id, entry] of liveAnalyticsSessions) {
+            if (entry.seen >= cutoff && liveAnalyticsSessions.size <= LIVE_SESSION_MAX_COUNT) break;
+            liveAnalyticsSessions.delete(id);
+        }
     }
+    return live;
+}
+
+function countAnalyticsEvent(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === 'anonymous' || sessionId.length > 100) return;
+    liveAnalyticsSession(sessionId).events++;
 }
 
 async function compressAndSaveThumbnail(base64Data, filename) {
@@ -2554,7 +2722,7 @@ function sanitizeProperties(props) {
 }
 
 // Track a single analytics event (no auth required - game clients send these)
-app.post('/api/analytics/event', requireApiKey, (req, res) => {
+app.post('/api/analytics/event', requireApiKey, async (req, res) => {
     try {
         const { session_id, event_name, properties, client_version, platform } = req.body;
 
@@ -2575,9 +2743,8 @@ app.post('/api/analytics/event', requireApiKey, (req, res) => {
             platform: typeof platform === 'string' ? platform.slice(0, 50) : 'unknown'
         };
 
-        const events = loadAnalyticsEvents();
-        events.push(event);
-        saveAnalyticsEvents(events);
+        await appendAnalyticsLines(ANALYTICS_EVENTS_LOG, [event]);
+        countAnalyticsEvent(event.session_id);
 
         console.log(`Analytics event: ${event_name} (session: ${session_id || 'anonymous'})`);
 
@@ -2590,7 +2757,7 @@ app.post('/api/analytics/event', requireApiKey, (req, res) => {
 });
 
 // Track multiple events in a batch (no auth required)
-app.post('/api/analytics/batch', requireApiKey, (req, res) => {
+app.post('/api/analytics/batch', requireApiKey, async (req, res) => {
     try {
         const { events: batchEvents, session_id, client_version, platform } = req.body;
 
@@ -2601,7 +2768,7 @@ app.post('/api/analytics/batch', requireApiKey, (req, res) => {
             return res.status(400).json({ error: 'Batch too large (max 500 events)' });
         }
 
-        const events = loadAnalyticsEvents();
+        const events = [];
         const processedEvents = [];
 
         for (const eventData of batchEvents) {
@@ -2622,7 +2789,10 @@ app.post('/api/analytics/batch', requireApiKey, (req, res) => {
             processedEvents.push(event.id);
         }
 
-        saveAnalyticsEvents(events);
+        await appendAnalyticsLines(ANALYTICS_EVENTS_LOG, events);
+        for (const event of events) {
+            countAnalyticsEvent(event.session_id);
+        }
 
         console.log(`Analytics batch: ${processedEvents.length} events (session: ${session_id || 'anonymous'})`);
 
@@ -2635,7 +2805,7 @@ app.post('/api/analytics/batch', requireApiKey, (req, res) => {
 });
 
 // Start a new session (no auth required)
-app.post('/api/analytics/session/start', requireApiKey, (req, res) => {
+app.post('/api/analytics/session/start', requireApiKey, async (req, res) => {
     try {
         const { client_version, platform, metadata } = req.body;
 
@@ -2649,9 +2819,8 @@ app.post('/api/analytics/session/start', requireApiKey, (req, res) => {
             event_count: 0
         };
 
-        const sessions = loadAnalyticsSessions();
-        sessions.push(session);
-        saveAnalyticsSessions(sessions);
+        await appendAnalyticsLines(ANALYTICS_SESSIONS_LOG, [session]);
+        liveAnalyticsSession(session.id).session = session;
 
         console.log(`Analytics session started: ${session.id}`);
 
@@ -2664,32 +2833,46 @@ app.post('/api/analytics/session/start', requireApiKey, (req, res) => {
 });
 
 // End a session (no auth required)
-app.post('/api/analytics/session/end', requireApiKey, (req, res) => {
+//
+// The end is appended to the session log; no file is read. A session this
+// process did not see start (it began before a restart, or the id was never a
+// session) is answered the same way, because telling the two apart would mean
+// reading every session. Readers ignore an end that has no session.
+app.post('/api/analytics/session/end', requireApiKey, async (req, res) => {
     try {
         const { session_id } = req.body;
 
         if (!session_id) {
             return res.status(400).json({ error: 'session_id is required' });
         }
-
-        const sessions = loadAnalyticsSessions();
-        const sessionIndex = sessions.findIndex(s => s.id === session_id);
-
-        if (sessionIndex === -1) {
+        if (typeof session_id !== 'string' || session_id.length > 100) {
             return res.status(404).json({ error: 'Session not found' });
         }
 
-        sessions[sessionIndex].end_time = new Date().toISOString();
+        const live = liveAnalyticsSessions.get(session_id);
+        const endTime = new Date().toISOString();
+        // The events received for this session by this process
+        const eventCount = live ? live.events : 0;
 
-        // Count events for this session
-        const events = loadAnalyticsEvents();
-        sessions[sessionIndex].event_count = events.filter(e => e.session_id === session_id).length;
+        await appendAnalyticsLines(ANALYTICS_SESSIONS_LOG, [
+            { ended: session_id, end_time: endTime, event_count: eventCount }
+        ]);
+        liveAnalyticsSessions.delete(session_id);
 
-        saveAnalyticsSessions(sessions);
+        const session = {
+            id: session_id,
+            start_time: null,
+            client_version: 'unknown',
+            platform: 'unknown',
+            metadata: {},
+            ...(live && live.session),
+            end_time: endTime,
+            event_count: eventCount
+        };
 
         console.log(`Analytics session ended: ${session_id}`);
 
-        res.json({ success: true, session: sessions[sessionIndex] });
+        res.json({ success: true, session });
 
     } catch (error) {
         console.error('Session end error:', error);
@@ -2934,10 +3117,9 @@ app.get('/api/analytics/event-names', requireAdmin, (req, res) => {
 });
 
 // Clear analytics data (admin auth required)
-app.delete('/api/analytics/clear', requireAdmin, (req, res) => {
+app.delete('/api/analytics/clear', requireAdmin, async (req, res) => {
     try {
-        fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
-        fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
+        await clearAnalyticsStore();
 
         console.log('Analytics data cleared');
 
@@ -2950,7 +3132,7 @@ app.delete('/api/analytics/clear', requireAdmin, (req, res) => {
 });
 
 // Delete events before a certain date (admin auth required)
-app.delete('/api/analytics/events/before', requireAdmin, (req, res) => {
+app.delete('/api/analytics/events/before', requireAdmin, async (req, res) => {
     try {
         const beforeDate = req.query.date;
 
@@ -2963,21 +3145,35 @@ app.delete('/api/analytics/events/before', requireAdmin, (req, res) => {
             return res.status(400).json({ error: 'Invalid date format. Use ISO 8601 (e.g., 2024-12-22T18:00:00Z)' });
         }
 
-        const events = loadAnalyticsEvents();
-        const originalCount = events.length;
+        // Keep only events on or after the cutoff date, in the history and in the
+        // log. Both are read strictly first: a store that cannot be read is left
+        // alone instead of being replaced by an empty one.
+        const { deletedCount, remainingCount } = await queueAnalyticsWrite(() => {
+            const history = readAnalyticsHistory(ANALYTICS_EVENTS_FILE, true);
+            const logged = readAnalyticsLog(ANALYTICS_EVENTS_LOG, true);
+            const keep = e => new Date(e.timestamp) >= cutoffDate;
+            const keptHistory = history.filter(keep);
+            const keptLogged = logged.filter(keep);
 
-        // Keep only events on or after the cutoff date
-        const filteredEvents = events.filter(e => new Date(e.timestamp) >= cutoffDate);
-        const deletedCount = originalCount - filteredEvents.length;
+            if (keptHistory.length !== history.length) {
+                replaceAnalyticsFile(ANALYTICS_EVENTS_FILE, file => fs.writeJsonSync(file, keptHistory, { spaces: 2 }));
+            }
+            if (keptLogged.length !== logged.length) {
+                replaceAnalyticsFile(ANALYTICS_EVENTS_LOG, file => writeAnalyticsLog(file, keptLogged));
+            }
 
-        saveAnalyticsEvents(filteredEvents);
+            return {
+                deletedCount: history.length + logged.length - keptHistory.length - keptLogged.length,
+                remainingCount: keptHistory.length + keptLogged.length
+            };
+        });
 
-        console.log(`Deleted ${deletedCount} events before ${beforeDate}. Remaining: ${filteredEvents.length}`);
+        console.log(`Deleted ${deletedCount} events before ${beforeDate}. Remaining: ${remainingCount}`);
 
         res.json({
             success: true,
             deleted_count: deletedCount,
-            remaining_count: filteredEvents.length,
+            remaining_count: remainingCount,
             cutoff_date: cutoffDate.toISOString()
         });
 
@@ -3020,19 +3216,10 @@ app.delete('/api/admin/reset', requireAdmin, (req, res) => {
 });
 
 // Clear analytics data only (admin protected)
-app.delete('/api/admin/reset-analytics', requireAdmin, (req, res) => {
+app.delete('/api/admin/reset-analytics', requireAdmin, async (req, res) => {
     try {
-        // Clear analytics events
-        if (fs.existsSync(ANALYTICS_EVENTS_FILE)) {
-            fs.writeJsonSync(ANALYTICS_EVENTS_FILE, []);
-            console.log('Analytics events cleared');
-        }
-
-        // Clear analytics sessions
-        if (fs.existsSync(ANALYTICS_SESSIONS_FILE)) {
-            fs.writeJsonSync(ANALYTICS_SESSIONS_FILE, []);
-            console.log('Analytics sessions cleared');
-        }
+        // Clear analytics events and sessions, history and logs
+        await clearAnalyticsStore();
 
         console.log('ADMIN RESET: Analytics data cleared');
         res.json({

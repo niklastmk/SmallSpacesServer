@@ -64,9 +64,21 @@ Analytics system for tracking game events from Unreal Engine Blueprints, storing
 
 ## Storage
 
-File-based JSON storage in `storage/analytics/`:
-- `events.json` - All tracked events
-- `sessions.json` - Session metadata
+File-based storage in `storage/analytics/`:
+- `events.ndjson` - New events, one JSON object per line, appended as they arrive
+- `sessions.ndjson` - New sessions, one line per start and one line per end (`ended`, `end_time`, `event_count`)
+- `events.json` - Events from before the append-only logs (a JSON list; only read)
+- `sessions.json` - Sessions from before the append-only logs (a JSON list; only read)
+
+The routes the game calls only append to the two `.ndjson` files and never read or
+rewrite a whole file, so they do not hold up other requests (TD-SERVER-473). The admin
+routes read the `.json` history plus the `.ndjson` log; clearing empties both.
+
+A session's `event_count` is the number of its events the server process received
+before the session ended; for a session that runs across a server restart it only
+counts the events since the restart.
+
+Local check on a temporary store (never real data): `node scripts/check-analytics-store.js`
 
 ## Admin Dashboard
 
