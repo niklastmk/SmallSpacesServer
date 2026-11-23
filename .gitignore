@@ -17,3 +17,4 @@ Thumbs.db
 
 # Dashboard development files (dist is committed for deployment)
 dashboard/node_modules/
+insights-ui/node_modules/

@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
+const insights = require('./insights');
 
 // ID format validation — accepts both standard UUIDs (with dashes) and UE-style GUIDs (32 hex chars)
 // Prevents path traversal and injection via IDs
@@ -95,7 +96,9 @@ const apiLimiter = rateLimit({
     legacyHeaders: false,
     keyGenerator: clientIp,
     validate: { xForwardedForHeader: false },
-    skip: isThumbnailRequest,
+    // A signed-in dashboard asks for one card after another and polls its live
+    // view; that must not use up the allowance of the same address's game.
+    skip: (req) => isThumbnailRequest(req) || insights.isDashboardRequest(req),
     message: { error: 'Too many requests, please try again later' }
 });
 app.use('/api/', apiLimiter);
@@ -134,6 +137,11 @@ function requireAdmin(req, res, next) {
     if (!expectedKey) {
         console.error('ADMIN_RESET_KEY not set — admin endpoints disabled');
         return res.status(503).json({ error: 'Admin endpoints not configured' });
+    }
+
+    // Signed in to the insights dashboard (server/insights/admin.js).
+    if (insights.hasSession(req)) {
+        return next();
     }
 
     if (!adminKey || typeof adminKey !== 'string') {
@@ -373,6 +381,12 @@ try {
     console.error('Failed to create storage directories:', error);
     process.exit(1);
 }
+
+// Insights store (Docs/Analytics/REDESIGN_PLAN.md, server/insights/README.md):
+// POST /api/v2/collect, POST /api/v2/crashes, GET /api/admin/v2/health and the
+// worker thread that owns the database. A failure in here is logged and does
+// not stop the server.
+insights.mount(app, { storageDir: STORAGE_DIR, requireApiKey, requireAdmin, clientIp, rateLimit });
 
 // Initialize metadata file if it doesn't exist
 try {
@@ -2745,6 +2759,7 @@ app.post('/api/analytics/event', requireApiKey, async (req, res) => {
 
         await appendAnalyticsLines(ANALYTICS_EVENTS_LOG, [event]);
         countAnalyticsEvent(event.session_id);
+        insights.legacyEvents([event]); // also into the new store; cannot fail this route
 
         console.log(`Analytics event: ${event_name} (session: ${session_id || 'anonymous'})`);
 
@@ -2793,6 +2808,7 @@ app.post('/api/analytics/batch', requireApiKey, async (req, res) => {
         for (const event of events) {
             countAnalyticsEvent(event.session_id);
         }
+        insights.legacyEvents(events); // also into the new store; cannot fail this route
 
         console.log(`Analytics batch: ${processedEvents.length} events (session: ${session_id || 'anonymous'})`);
 
@@ -2821,6 +2837,7 @@ app.post('/api/analytics/session/start', requireApiKey, async (req, res) => {
 
         await appendAnalyticsLines(ANALYTICS_SESSIONS_LOG, [session]);
         liveAnalyticsSession(session.id).session = session;
+        insights.legacySessionStart(session); // also into the new store; cannot fail this route
 
         console.log(`Analytics session started: ${session.id}`);
 
@@ -3317,6 +3334,7 @@ app.post('/api/crashes', uploadLimiter, requireApiKey, (req, res) => {
 
         // Categorize and group immediately (instant, no AI)
         categorizeAndGroupCrash(crashId);
+        insights.legacyCrash(crashMetadata, meta, crashPath); // also into the new store; cannot fail this route
 
         res.json({
             success: true,
@@ -3867,6 +3885,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('Received SIGTERM, shutting down gracefully');
+    insights.stop();
     server.close(() => {
         console.log('Server closed');
         process.exit(0);
@@ -3875,6 +3894,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     console.log('Received SIGINT, shutting down gracefully');
+    insights.stop();
     server.close(() => {
         console.log('Server closed');
         process.exit(0);

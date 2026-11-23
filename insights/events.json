@@ -1,0 +1,43 @@
+{
+  "schema": 2,
+  "note": "Single list of the events the game sends to POST /api/v2/collect. Add an event here first. Property types: s = string, n = number, b = boolean. Unknown events and properties are stored, and listed as unregistered.",
+  "session_fields": {
+    "build": "s", "steam_build": "n", "steam_branch": "s", "platform": "s", "os_version": "s", "device": "s",
+    "mod_ue4ss": "b", "cpu": "s", "cpu_cores": "n", "ram_gb": "n", "gpu": "s", "rhi": "s",
+    "screen_w": "n", "screen_h": "n", "res_scale": "n", "language": "s", "quality_preset": "s", "upscaler": "s",
+    "window_mode": "s", "launch_count": "n", "existing_player": "b"
+  },
+  "events": {
+    "session_start":        { "wave": 1, "about": "Launch, once the game instance is up", "props": "session_fields" },
+    "menu_shown":           { "wave": 1, "about": "Main menu first visible, with the settings in effect", "props": { "startup_s": "n", "quality_preset": "s", "upscaler": "s", "window_mode": "s", "screen_w": "n", "screen_h": "n", "res_scale": "n", "language": "s" } },
+    "session_end":          { "wave": 1, "about": "Clean quit", "props": { "duration_s": "n", "active_s": "n", "reason": "s" } },
+    "session_abnormal_end": { "wave": 1, "about": "This launch found the previous session's marker", "props": { "prev_session_id": "s", "last_stage": "s", "seconds_alive": "n", "prev_started_ms": "n", "prev_last_ms": "n", "had_crash_folder": "b" } },
+    "room_enter":           { "wave": 1, "about": "A room starts loading", "props": { "mode": "s", "level_id": "s" } },
+    "room_ready":           { "wave": 1, "about": "Room playable", "props": { "mode": "s", "level_id": "s", "load_s": "n" } },
+    "room_load_failed":     { "wave": 1, "about": "Room load gave up", "props": { "mode": "s", "level_id": "s", "stage": "s", "canceled": "b" } },
+    "room_exit":            { "wave": 1, "about": "Room left or game quit", "props": { "mode": "s", "level_id": "s", "duration_s": "n", "active_s": "n", "items_placed": "n", "items_removed": "n", "items_moved": "n", "materials_applied": "n", "build_steps": "n", "undo_count": "n", "redo_count": "n", "saves": "n", "ready": "b", "exit_to": "s" } },
+    "room_perf":            { "wave": 1, "about": "With room_exit after 60 s in the room", "props": { "mode": "s", "level_id": "s", "fps_avg": "n", "fps_p1": "n", "hitches": "n", "mem_mb": "n", "quality_preset": "s", "upscaler": "s", "res_scale": "n" } },
+    "catalog_usage":        { "wave": 1, "about": "With room_exit: what was placed", "props": { "mode": "s", "level_id": "s", "items": "s" } },
+    "star_earned":          { "wave": 1, "about": "A star is granted", "props": { "level_id": "s", "stars_total": "n" } },
+    "onboarding_step":      { "wave": 2, "about": "Tutorial item done or how-to-play closed", "props": { "flow": "s", "step": "s", "action": "s" } },
+    "save_failed":          { "wave": 1, "about": "A save ended in any outcome other than committed", "props": { "outcome": "s", "mode": "s", "level_id": "s" } },
+    "save_recovery":        { "wave": 1, "about": "The recovery prompt was answered", "props": { "choice": "s", "ok": "b" } },
+    "gallery_open":         { "wave": 1, "about": "Community list received", "props": { "ok": "b", "count": "n" } },
+    "featured_shown":       { "wave": 1, "about": "Featured list received", "props": { "ok": "b", "count": "n" } },
+    "design_upload":        { "wave": 1, "about": "Upload finished", "props": { "ok": "b" } },
+    "design_download":      { "wave": 1, "about": "Download finished", "props": { "design_id": "s", "ok": "b" } },
+    "design_like":          { "wave": 1, "about": "Like or unlike sent", "props": { "design_id": "s", "like": "b" } },
+    "image_upload":         { "wave": 1, "about": "Custom image imported", "props": { "ok": "b" } },
+    "setting_change":       { "wave": 1, "about": "A tracked setting changed", "props": { "key": "s", "to": "s", "by": "s" } },
+    "request_failed":       { "wave": 2, "about": "A design server call failed", "props": { "endpoint": "s", "status": "n" } },
+    "level_complete":       { "wave": 2, "about": "Unpacking level finished", "props": { "level_id": "s", "stars": "n", "duration_s": "n" } },
+    "design_view":          { "wave": 2, "about": "A community design opened in detail", "props": { "design_id": "s", "list": "s" } },
+    "artist_link_shown":    { "wave": 2, "about": "An artist link became visible", "props": { "slug": "s", "placement": "s" } },
+    "artist_link_click":    { "wave": 2, "about": "Artist link pressed", "props": { "slug": "s", "placement": "s" } },
+    "photo_taken":          { "wave": 2, "about": "Photo saved", "props": { "mode": "s" } },
+    "content_skipped":      { "wave": 2, "about": "An item failed to load and was skipped", "props": { "kind": "s", "id": "s" } }
+  },
+  "legacy_map": {
+    "TrackGameMode": { "to": "room_enter", "props": { "GameMode": "mode" }, "values": { "Unpack": "unpack", "Design": "design", "Designer": "design", "Creative": "creative" } }
+  }
+}
