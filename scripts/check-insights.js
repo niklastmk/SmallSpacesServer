@@ -235,7 +235,7 @@ function storedText() {
     check('admin health refuses a request without or with a wrong admin key', noKey.status === 403 && wrongKey.status === 403, [noKey.status, wrongKey.status]);
     let h = await settle();
     check('admin health answers: worker running, database ok, eleven tables without data',
-        h.worker.status === 'running' && h.database.status === 'ok' && h.database.schema_version === 2
+        h.worker.status === 'running' && h.database.status === 'ok' && h.database.schema_version === 3
         && Object.keys(h.tables).length === 11 && h.tables.events === 0 && h.tables.sessions === 0 && h.spool.backlog_bytes === 0,
         { database: h.database, tables: h.tables });
 

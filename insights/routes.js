@@ -7,11 +7,13 @@
 // The two game routes only append: they check the request, write one line to
 // the spool (and, for a crash, the archive file) and answer. They never open
 // the database and never read stored data. The network address is used by the
-// rate limiters only; it is not stored and not logged.
+// rate limiters and to work out the country (geo.js); it is not stored and not
+// logged, only the two letters of the country are.
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const geo = require('./geo');
 
 const MAX_COLLECT_BYTES = 64 * 1024;
 const MAX_EVENTS = 100;
@@ -109,6 +111,8 @@ function register(app, options) {
             if (error) return res.status(400).json({ error });
 
             record.received_at = Date.now();
+            const country = geo.countryOf(clientIp(req));
+            if (country) record.country = country;
             // A body sent without a length (chunked): measure what would be stored.
             if (!Number.isFinite(declared) && Buffer.byteLength(JSON.stringify(record)) > MAX_COLLECT_BYTES) {
                 return res.status(413).json({ error: 'Batch too large (max 64 KB)' });

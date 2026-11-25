@@ -77,6 +77,14 @@ The body is the archive itself (`application/zip`, at most 50 MB). The fields ar
 - Platform is what the query says. It is never guessed.
 - The worker reads the archive afterwards. A Windows archive gives the error message, call stack, hardware and the crash time from the minidump. A Mac archive holds one macOS report: the message is the exception type and signal, the group key is the exception type plus the top three frames inside the game's own binary. An archive that cannot be read, or holds nothing readable, still gets its row, without context, in a group of its own per platform.
 
+## Country
+
+`geo.js` turns the address of a request into two letters while the request is handled (`POST /api/v2/collect` and the old session start). Only the letters are stored (`sessions.country`, the first one heard); the address is neither stored nor logged. The table is `geo/countries.bin.gz`, made from DB-IP's free country list by `node scripts/build-geo.js <dbip-country-lite-YYYY-MM.csv.gz>` (a new list every month at db-ip.com/db/download/ip-to-country-lite). Licence CC BY 4.0: IP Geolocation by DB-IP (https://db-ip.com), credited on the Live page. Against the source it agrees on 99.97 % of range ends; the rest are ranges smaller than an IPv6 /64.
+
+## Live page
+
+`queries/live.js`, eight cards polled every 4 to 30 seconds. "Playing now" is an estimate from launches and the lengths of finished sessions, explained there, because the released game rarely reports while it runs (TD-TELEMETRY-528). Check: `node scripts/check-insights-live.js [port]`. To look at it: seed a throwaway store, start the server, then `node scripts/simulate-live.js <port>`.
+
 ## Old game builds
 
 `old-game-routes.js` answers the routes that versions from before November 2026 call: `/api/analytics/event`, `/api/analytics/batch`, `/api/analytics/session/start`, `/api/analytics/session/end` and `/api/crashes`. Paths and answers are what those versions know; everything goes to the spool and nothing else. Their rows have `legacy = 1`. A session end is answered and not stored. The crash archive is stored in `storage/crashes/` and read by the worker. `TrackGameMode` is stored as `room_enter` (the `legacy_map` in `events.json`). An old crash keeps its old id as `crash_guid`; its platform is what the game sent in `metadata.platform`, otherwise empty. The old dashboard, its admin routes and the files it read are retired: `analytics/*.json`, `analytics/*.ndjson`, `crashes_metadata.json` and `crash_groups.json` are no longer written or read (the import took them over); they stay on the volume.

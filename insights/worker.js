@@ -93,6 +93,12 @@ function sessionFieldValue(kind, value) {
     return undefined;
 }
 
+// Two capital letters or nothing; the first country a session was heard from stays.
+function setCountry(sessionId, value) {
+    if (typeof value !== 'string' || !/^[A-Z]{2}$/.test(value)) return;
+    db.run('UPDATE sessions SET country = ? WHERE session_id = ? AND country IS NULL', value, sessionId);
+}
+
 function setSessionField(sessionId, name, value) {
     const kind = SESSION_FIELDS.get(name);
     if (!kind) return;
@@ -166,6 +172,7 @@ function storeCollect(record) {
     const lastTime = times.reduce((a, b) => Math.max(a, b), alive ? received : -Infinity);
 
     db.run(UPSERT_SESSION, sessionId, installId, 0, firstTime, lastTime, build, steamBuild, platform);
+    setCountry(sessionId, record.country);
     db.run(UPSERT_INSTALL, installId, firstTime, lastTime, build, build, platform);
 
     const days = new Set(times.map(spool.utcDay));
@@ -200,9 +207,9 @@ function storeCollect(record) {
         } else if (event.name === 'session_end') {
             db.run(`UPDATE sessions SET ended_at = ?, end_reason = 'clean',
                         duration_s = COALESCE(?, duration_s), active_s = COALESCE(?, active_s),
-                        last_seen_at = MAX(last_seen_at, ?)
+                        last_seen_at = MAX(last_seen_at, ?), end_received_at = COALESCE(end_received_at, ?)
                     WHERE session_id = ?`,
-                t, finite(props.duration_s) ? props.duration_s : null, finite(props.active_s) ? props.active_s : null, t, sessionId);
+                t, finite(props.duration_s) ? props.duration_s : null, finite(props.active_s) ? props.active_s : null, t, received, sessionId);
         } else if (event.name === 'session_abnormal_end') {
             // Sent by the next session about the one before it.
             const previous = idOrNull(props.prev_session_id);
@@ -214,9 +221,10 @@ function storeCollect(record) {
                 const startedBefore = finite(props.prev_started_ms) ? eventTime(props.prev_started_ms) : t;
                 const seenBefore = finite(props.prev_last_ms) ? Math.max(startedBefore, eventTime(props.prev_last_ms)) : startedBefore;
                 db.run(UPSERT_SESSION, previous, installId, 0, Math.min(startedBefore, t), Math.min(seenBefore, t), build, steamBuild, platform);
-                db.run(`UPDATE sessions SET end_reason = 'abnormal', last_stage = ?, duration_s = COALESCE(?, duration_s)
+                db.run(`UPDATE sessions SET end_reason = 'abnormal', last_stage = ?, duration_s = COALESCE(?, duration_s),
+                            end_received_at = COALESCE(end_received_at, ?)
                         WHERE session_id = ? AND (end_reason IS NULL OR end_reason <> 'clean')`,
-                    textOrNull(props.last_stage, 500), finite(props.seconds_alive) ? props.seconds_alive : null, previous);
+                    textOrNull(props.last_stage, 500), finite(props.seconds_alive) ? props.seconds_alive : null, received, previous);
             }
         }
     });
@@ -234,6 +242,7 @@ function storeLegacySession(record) {
     if (!sessionId) throw new Error('legacy session without id');
     db.run(UPSERT_SESSION, sessionId, null, 1, received, received,
         knownOrNull(session.client_version), null, knownOrNull(session.platform));
+    setCountry(sessionId, record.country);
 }
 
 // An old event name and its properties in the new vocabulary (events.json, legacy_map).

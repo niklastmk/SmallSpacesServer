@@ -104,11 +104,24 @@ const WINDOWS_GPUS = [['NVIDIA GeForce RTX 3060', 16], ['NVIDIA GeForce RTX 4060
 const MAC_CHIPS = [['Apple M1', 30], ['Apple M2', 26], ['Apple M3', 16], ['Apple M1 Pro', 10], ['Apple M2 Pro', 7], ['Apple M3 Pro', 6], ['Apple M4', 5]];
 const LANGUAGES = [['en', 38], ['de', 14], ['zh-Hans', 12], ['fr', 8], ['ja', 7], ['es', 7], ['ko', 5], ['pt-BR', 5], ['ru', 4]];
 const SCREENS = [[1920, 1080, 50], [2560, 1440, 22], [3840, 2160, 6], [1366, 768, 5], [1280, 800, 6], [2560, 1600, 6], [3024, 1964, 5]];
+// Countries have their own generator, so the rest of the seeded data stays as it was.
+const COUNTRIES = [['US', 30], ['DE', 13], ['GB', 8], ['CN', 8], ['FR', 6], ['CA', 5], ['JP', 5], ['BR', 4], ['AU', 4], ['KR', 3], ['NL', 3], ['PL', 3], ['ES', 2], ['SE', 2],
+    ['IT', 2], ['MX', 2], ['RU', 2], ['TR', 1], ['IN', 1], ['SG', 1], ['ZA', 1], ['AR', 1], ['NO', 1], ['CH', 1], ['NZ', 1], ['TH', 1], ['FI', 1], ['', 2]];
+let countrySeed = 8086;
+function seededCountry() {
+    countrySeed = (countrySeed * 1664525 + 1013904223) >>> 0;
+    let roll = (countrySeed / 4294967296) * COUNTRIES.reduce((total, entry) => total + entry[1], 0);
+    for (const [code, weight] of COUNTRIES) {
+        roll -= weight;
+        if (roll <= 0) return code || undefined;
+    }
+    return undefined;
+}
 const WEAK_GPU = /UHD|Iris|Radeon\(TM\)|GTX 1650|GTX 1060/;
 
 function newInstall(firstSeen) {
     const platform = weighted([['Windows', 84], ['Mac', 11.5], ['Deck', 4.5]]);
-    const install = { install_id: id(), first_seen: firstSeen, launches: 0, platform, existing: chance(0.7), stars: whole(0, 6) };
+    const install = { install_id: id(), country: seededCountry(), first_seen: firstSeen, launches: 0, platform, existing: chance(0.7), stars: whole(0, 6) };
     if (platform === 'Mac') {
         const chip = weighted(MAC_CHIPS);
         Object.assign(install, {
@@ -351,7 +364,7 @@ function playSession(install, start, build) {
     }
 
     // Batches as the game sends them: the first at once, then every 30 seconds.
-    const header = { type: 'collect', schema: 2, install_id: install.install_id, session_id: sessionId, build, steam_build: wave2 ? 20144210 : 20101987, platform: install.wire_platform };
+    const header = { type: 'collect', schema: 2, install_id: install.install_id, session_id: sessionId, build, steam_build: wave2 ? 20144210 : 20101987, platform: install.wire_platform, country: install.country };
     let batch = [];
     let batchEnd = events[0].t + 1000;
     const flush = () => {

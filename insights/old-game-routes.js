@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const geo = require('./geo');
 
 const EVENTS_PER_LINE = 100;
 const MAX_EVENTS = 500;
@@ -43,7 +44,7 @@ function sanitizeProperties(props) {
 }
 
 function register(app, options) {
-    const { storageDir, requireApiKey, uploadLimiter, spool, poke, log } = options;
+    const { storageDir, requireApiKey, uploadLimiter, clientIp, spool, poke, log } = options;
     const crashesDir = path.join(storageDir, 'crashes');
     fs.mkdirSync(crashesDir, { recursive: true });
 
@@ -111,7 +112,7 @@ function register(app, options) {
                 platform: version(platform),
                 metadata: sanitizeProperties(metadata)
             };
-            await spool.append({ type: 'legacy_session', legacy: true, received_at: Date.now(), session });
+            await spool.append({ type: 'legacy_session', legacy: true, received_at: Date.now(), country: geo.countryOf(clientIp(req)), session });
             poke();
             res.json({ success: true, session_id: session.id });
         } catch (error) {

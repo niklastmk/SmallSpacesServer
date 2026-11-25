@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const registry = require('./events.json');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // The context columns of a session are the `session_fields` of events.json.
 const COLUMN_TYPES = { s: 'TEXT', n: 'REAL', b: 'INTEGER' };
@@ -21,7 +21,7 @@ const SAFE_COLUMN = /^[a-z][a-z0-9_]{0,63}$/;
 const ALWAYS_SESSION_FIELDS = { build: 's', steam_build: 'n', platform: 's' };
 // The columns the worker maintains itself; a session field cannot take their name.
 const SESSION_OWN_COLUMNS = ['session_id', 'install_id', 'legacy', 'started_at', 'last_seen_at', 'ended_at',
-    'end_reason', 'last_stage', 'duration_s', 'active_s', 'event_count'];
+    'end_reason', 'last_stage', 'duration_s', 'active_s', 'event_count', 'country', 'end_received_at'];
 function sessionFieldColumns() {
     return Object.entries({ ...ALWAYS_SESSION_FIELDS, ...(registry.session_fields || {}) })
         .filter(([name, type]) => SAFE_COLUMN.test(name) && COLUMN_TYPES[type] && !SESSION_OWN_COLUMNS.includes(name))
@@ -190,6 +190,18 @@ const MIGRATIONS = [
                 CREATE INDEX IF NOT EXISTS events_session ON events (session_id, t);
                 CREATE INDEX IF NOT EXISTS sessions_last_seen ON sessions (last_seen_at);
                 CREATE INDEX IF NOT EXISTS crashes_received ON crashes (received_at);
+            `);
+        }
+    },
+    {
+        // The Live page: where a session is played (two letters, worked out from
+        // the address while the request is handled; the address is not kept) and
+        // when its end was heard of, which can be much later than the end itself.
+        version: 3,
+        up(db) {
+            db.exec(`
+                ALTER TABLE sessions ADD COLUMN country TEXT;
+                ALTER TABLE sessions ADD COLUMN end_received_at INTEGER;
             `);
         }
     }
