@@ -95,6 +95,15 @@ function player(overrides = {}) {
         [geo.countryOf('8.8.8.8'), geo.countryOf('2a02:8108::1'), geo.countryOf('2606:4700:4700::1111')]);
     check('the table says where it is from and when', /^\d{4}-\d{2}$/.test(geo.info().month) && /DB-IP/.test(geo.info().source), geo.info());
 
+    // The map's source is not in the deploy repository: checked where it is.
+    const worldFile = path.join(__dirname, '..', 'insights-ui', 'src', 'pages', 'live', 'world.ts');
+    if (fs.existsSync(worldFile)) {
+        const onMap = new Set([...fs.readFileSync(worldFile, 'utf8').matchAll(/code: '([A-Z]{2})'/g)].map((match) => match[1]));
+        const known = geo.load().header.codes.filter(Boolean);
+        const missing = known.filter((code) => !onMap.has(code) && !['AQ', 'BV', 'HM'].includes(code)); // nobody lives there
+        check('every country of the table has its place on the map, and the map has no other', missing.length === 0 && [...onMap].every((code) => known.includes(code)), [missing, [...onMap].filter((code) => !known.includes(code))]);
+    }
+
     // ------------------------------------------------------------------ the estimate, as arithmetic
     const table = new Float64Array(722);
     for (let m = 0; m < table.length; m++) table[m] = Math.max(0, 1 - m / 100); // sessions end evenly over 100 minutes
