@@ -8,7 +8,7 @@
 //   reports_days   crash reports received longer ago than this: the row, and
 //                  the archive when it is one of ours (storage/insights/crashes).
 //                  The archives of the old route (storage/crashes) are never
-//                  touched; the old dashboard still serves them.
+//                  touched.
 //   sessions_days  sessions last seen longer ago than this
 //
 // Crash issues (crash_groups) and their counts, installs, install_days and

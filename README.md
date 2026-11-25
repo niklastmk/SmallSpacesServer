@@ -45,6 +45,8 @@ The server will run on http://localhost:3000
 - `GET /api/thumbnails/:filename` - Get design thumbnail
 - `GET /api/health` - Health check
 
+Usage data, crash reports and the dashboard at `/insights`: `insights/README.md`. The old dashboard at `/admin` was removed in November 2026; the address redirects.
+
 ## Storage
 
 - Design files: `storage/designs/`
@@ -71,7 +73,7 @@ Why a redirect instead of the artist's URL directly:
 1. **A link inside a shipped Steam build is permanent.** Editing the destination here re-points every copy already in players' hands — no game patch. Switching an artist off shows a "link no longer available" page instead of a dead link.
 2. It is the only place clicks can be counted without a third-party tracker.
 
-**Managing artists:** Dashboard → **Artist Links**. Each row is name / slug / destination / active, with a live preview of the exact URL the player will land on and a copy button for the link to put in the game.
+**Managing artists:** dashboard (`/insights`) → **Artist links**. Each row is name / slug / destination / active, with a live preview of the exact URL the player will land on and a copy button for the link to put in the game.
 
 **What the player's browser receives** (for `/go/leah`):
 
@@ -98,7 +100,6 @@ Shopify reads those UTM parameters automatically — nothing to install on the a
 | `GET /go/:slug` | none | The redirect (optional `?p=<label>`). Rate limited per visitor IP (60/min) |
 | `GET /api/artists/admin` | admin | Artist list |
 | `POST /api/artists/admin` | admin | Replace artist list |
-| `GET /api/artists/clicks?days=&slug=` | admin | Click stats |
 
 Destinations are validated as `http`/`https` on save — without that check the redirect would be an open redirect usable for phishing.
 

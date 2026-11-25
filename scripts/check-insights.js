@@ -443,9 +443,38 @@ function storedText() {
         && legacyBatch.status === 200 && JSON.stringify(Object.keys(legacyBatch.json)) === '["success","event_ids","count"]' && legacyBatch.json.count === 3
         && legacySingle.status === 200 && JSON.stringify(Object.keys(legacySingle.json)) === '["success","event_id"]' && legacyBad.status === 400,
         [legacyStart.json, legacyBatch.json && legacyBatch.json.count, legacySingle.status, legacyBad.status]);
-    const oldSummary = (await call('GET', '/api/analytics/summary', null, { admin: true })).json;
-    check('the old store still gets them (old dashboard summary: 4 events, 1 session)',
-        oldSummary && oldSummary.events.total === 4 && oldSummary.sessions.total === 1, oldSummary && { events: oldSummary.events.total, sessions: oldSummary.sessions.total });
+    const legacyEnd = await call('POST', '/api/analytics/session/end', { session_id: legacySid });
+    const legacyEndBad = await call('POST', '/api/analytics/session/end', {});
+    check('an old session end is answered as before',
+        legacyEnd.status === 200 && legacyEnd.json.success === true && legacyEnd.json.session.id === legacySid && legacyEndBad.status === 400, legacyEnd.json);
+    // The old dashboard and its routes are gone, with and without the admin key.
+    const gone = [];
+    for (const [method, url] of [['GET', '/api/analytics/summary'], ['GET', '/api/analytics/events'], ['GET', '/api/analytics/sessions'], ['GET', '/api/analytics/event-names'],
+        ['GET', '/api/analytics/event-breakdown'], ['DELETE', '/api/analytics/clear'], ['DELETE', '/api/analytics/events/before'], ['DELETE', '/api/admin/reset-analytics'],
+        ['GET', '/api/crashes'], ['GET', '/api/crashes/groups'], ['GET', '/api/crashes/summary'], ['GET', '/api/crashes/categories'], ['POST', '/api/crashes/reclassify'],
+        ['GET', '/api/artists/clicks']]) {
+        for (const admin of [true, false]) {
+            const answer = await call(method, url, method === 'POST' ? {} : null, { admin });
+            if (answer.status !== 404) gone.push([method, url, answer.status]);
+        }
+    }
+    check('every admin route of the old dashboard answers 404', gone.length === 0, gone);
+    const moved = [];
+    for (const url of ['/admin', '/admin/', '/admin/login', '/admin/crashes', '/admin/assets/index.js']) {
+        const answer = await call('GET', url, null, { headers: { cookie: `admin_session=${ADMIN}` } });
+        const cookies = [].concat(answer.headers['set-cookie'] || []).join(';');
+        if (answer.status !== 302 || answer.headers.location !== '/insights' || !/admin_session=;/.test(cookies)) moved.push([url, answer.status, answer.headers.location, cookies.length]);
+    }
+    const oldLogin = await call('POST', '/admin/login', { key: ADMIN });
+    check('the old dashboard address leads to /insights and its sign-in cookie is removed; its sign-in is gone',
+        moved.length === 0 && oldLogin.status === 410 && !/admin_session=[^;]/.test([].concat(oldLogin.headers['set-cookie'] || []).join(';')), [moved, oldLogin.status]);
+    const featuredNoKey = await call('GET', '/api/featured/admin');
+    const artistsNoKey = await call('GET', '/api/artists/admin');
+    const featuredKey = await call('GET', '/api/featured/admin', null, { admin: true });
+    const artistsKey = await call('GET', '/api/artists/admin', null, { admin: true });
+    check('the featured and artist routes the new dashboard saves with are still there and still guarded',
+        featuredNoKey.status === 403 && artistsNoKey.status === 403 && featuredKey.status === 200 && artistsKey.status === 200 && Array.isArray(artistsKey.json.artists),
+        [featuredNoKey.status, artistsNoKey.status, featuredKey.status, artistsKey.status]);
     await settle();
     const legacySession = row('SELECT * FROM sessions WHERE session_id = ?', legacySid);
     const legacyEvents = rows('SELECT name, props, registered, legacy, seq, install_id, platform, build, t FROM events WHERE session_id = ? ORDER BY id', legacySid);
@@ -607,13 +636,13 @@ function storedText() {
     const legacyCrash2 = await call('POST', '/api/crashes', { crashData: zipOf({ 'readme.txt': 'nothing' }).toString('base64'), filename: 'x.zip' });
     const legacyCrashBad = await call('POST', '/api/crashes', { filename: 'x.zip' });
     await settle();
-    const oldCrashList = (await call('GET', '/api/crashes', null, { admin: true })).json;
     const lc1 = legacyCrash1.json && row('SELECT * FROM crashes WHERE crash_guid = ?', legacyCrash1.json.crash_id);
     const lc2 = legacyCrash2.json && row('SELECT * FROM crashes WHERE crash_guid = ?', legacyCrash2.json.crash_id);
     const groupAfterLegacy = row('SELECT * FROM crash_groups WHERE group_key = ?', 'Thing.cpp:123');
-    check('the old crash route answers as before and the old crash list still has its reports',
+    check('the old crash route answers as before, and no file of the old platform is written',
         legacyCrash1.status === 200 && JSON.stringify(Object.keys(legacyCrash1.json)) === '["success","crash_id","message"]' && legacyCrash1.json.success === true
-        && legacyCrash2.status === 200 && legacyCrashBad.status === 400 && oldCrashList && (oldCrashList.crashes || oldCrashList).length === 2,
+        && legacyCrash2.status === 200 && legacyCrashBad.status === 400
+        && !fs.existsSync(path.join(storage, 'analytics')) && !fs.existsSync(path.join(storage, 'crashes_metadata.json')) && !fs.existsSync(path.join(storage, 'crash_groups.json')),
         [legacyCrash1.status, legacyCrash1.json, legacyCrashBad.status]);
     check('old crash uploads appear in the new store as legacy rows: platform only when the game sent one, grouped with the new ones',
         lc1 && lc1.legacy === 1 && lc1.platform === 'Mac' && lc1.build === '0.1.0' && lc1.parsed === 1 && lc1.session_id === legacySid

@@ -357,8 +357,10 @@ function storeCrash(record) {
         textOrNull(record.file, 400), integerOrNull(record.size));
 }
 
-// A crash stored by the old route POST /api/crashes. That route has already
-// read the archive, so its result is used and the archive is not read again.
+// A crash of an old game version (POST /api/crashes). With `unread` its archive
+// is read afterwards like any other (parsePendingCrashes); what the game said is
+// kept for a report that holds nothing readable. Without it (the import of the
+// old files) the old route's own reading is used and the archive is not touched.
 function storeLegacyCrash(record, details = {}) {
     const received = finite(record.received_at) ? record.received_at : Date.now();
     const metadata = objectOrEmpty(record.metadata);
@@ -370,6 +372,11 @@ function storeLegacyCrash(record, details = {}) {
     const result = db.run(INSERT_CRASH, guid, 1, null, sessionId, build, null, platform, received, received,
         textOrNull(record.file, 400), integerOrNull(metadata.file_size));
     if (result.changes === 0) return;
+    if (record.unread === true) {
+        db.run('UPDATE crashes SET error_message = ?, gpu = ? WHERE id = ?', textOrNull(metadata.error_message, 2000),
+            knownOrNull(metadata.gpu, 200), Number(result.lastInsertRowid));
+        return;
+    }
 
     const context = metadata.crash_context && typeof metadata.crash_context === 'object' ? metadata.crash_context : null;
     classifyAndGroup({ id: Number(result.lastInsertRowid), platform, build, received_at: received }, context, {
@@ -398,7 +405,8 @@ function storeRecord(record) {
         case 'collect': return storeCollect(record);
         case 'crash': return storeCrash(record);
         case 'legacy_session': return storeLegacySession(record);
-        case 'legacy_events': return storeLegacyEvents(record);
+        case 'legacy_events':   // copied by the first version of this store; import.js looks for these
+        case 'old_game_events': return storeLegacyEvents(record);
         case 'legacy_crash': return storeLegacyCrash(record);
         default: throw new Error(`unknown record type ${JSON.stringify(record.type)}`);
     }
@@ -450,7 +458,7 @@ function ingestSpool() {
 // Reads stored archives that have a row but were not read yet.
 function parsePendingCrashes() {
     if (!crashParse.available()) return false; // rows stay pending until adm-zip is there
-    const rows = db.all('SELECT id, crash_guid, file, platform, build, received_at FROM crashes WHERE parsed = 0 ORDER BY id LIMIT ?',
+    const rows = db.all('SELECT id, crash_guid, file, platform, build, received_at, error_message, gpu FROM crashes WHERE parsed = 0 ORDER BY id LIMIT ?',
         CRASHES_PER_PASS + 1);
     for (const row of rows.slice(0, CRASHES_PER_PASS)) {
         // The slow part (reading and unpacking the file) happens outside the transaction.
@@ -463,7 +471,9 @@ function parsePendingCrashes() {
                     parsed: archive.ok ? 1 : 2,
                     parse_error: archive.error,
                     has_minidump: archive.has_minidump,
-                    hang: archive.hang
+                    hang: archive.hang,
+                    fallback_message: row.error_message || '',
+                    fallback_gpu: row.gpu
                 });
             });
             if (archive.ok) stats.crashes_parsed++; else stats.crashes_unreadable++;

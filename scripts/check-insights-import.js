@@ -502,6 +502,33 @@ async function oldBuildSends(label, events) {
     return { ok, sessionId, events, crashId: crash.json && crash.json.crash_id };
 }
 
+// The same sent to the server as it was between the store's start and the end of
+// the old dashboard: the old routes wrote their own files and copied every line
+// into the spool. Written here directly, in the shapes of that server.
+async function oldServerStored(label, events) {
+    const sessionId = newId();
+    const now = Date.now();
+    const line = (file, record) => fs.appendFileSync(path.join(storage, 'analytics', file), JSON.stringify(record) + '\n');
+    fs.mkdirSync(spoolDir(), { recursive: true });
+    const copy = (record) => fs.appendFileSync(path.join(spoolDir(), `collect-${new Date(now).toISOString().slice(0, 10)}.ndjson`), JSON.stringify(record) + '\n');
+    const session = { id: sessionId, start_time: new Date(now).toISOString(), client_version: '1.3.2', platform: 'Mac', metadata: { os: 'macOS' } };
+    line('sessions.ndjson', { ...session, end_time: null, event_count: 0 });
+    copy({ type: 'legacy_session', legacy: true, received_at: now, session });
+    const list = [];
+    for (let n = 0; n < events; n++) list.push({ id: newId(), session_id: sessionId, event_name: n % 2 ? 'TrackGameMode' : 'ItemPlaced',
+        properties: n % 2 ? { GameMode: 'Design' } : { Item: `${label}-${n}` }, timestamp: new Date(now + n).toISOString(), client_version: '1.3.2', platform: 'Mac' });
+    for (const event of list) line('events.ndjson', event);
+    copy({ type: 'legacy_events', legacy: true, received_at: now, events: list });
+    const crashId = newId();
+    const metadata = { id: crashId, filename: `UECC-${label}.zip`, stored_filename: `${crashId}_UECC-${label}.zip`, session_id: sessionId, error_message: '', file_size: 10,
+        upload_date: new Date(now).toISOString(), version: '1.3.2', platform: 'Windows', gpu: 'unknown',
+        crash_context: { error_message: `Assertion failed: Seam() [File:D:\\x\\Seam.cpp] [Line: 7] ${label}`, crash_type: 'Assert', callstack: '', crash_time: null } };
+    const listFile = path.join(storage, 'crashes_metadata.json');
+    fs.writeFileSync(listFile, JSON.stringify([...JSON.parse(fs.readFileSync(listFile, 'utf8')), metadata], null, 2));
+    copy({ type: 'legacy_crash', legacy: true, received_at: now, crash_id: crashId, file: `crashes/${metadata.stored_filename}`, platform: 'Mac', metadata });
+    return { ok: true, sessionId, events, crashId };
+}
+
 const SMALL = { sessionsJson: 500, sessionsLog: 400, eventsJson: 2500, eventsLog: 2000, crashes: 60 };
 
 (async () => {
@@ -665,13 +692,10 @@ const SMALL = { sessionsJson: 500, sessionsLog: 400, eventsJson: 2500, eventsLog
     newStorage();
     const seamExpected = writeOldFiles(storage, { now: NOW, ...SMALL });
     const seamLogSize = fs.statSync(path.join(storage, 'analytics', 'events.ndjson')).size;
-    // The store runs without its database (as on a server whose Node is too old):
-    // the old routes write their own files and the spool, nothing is imported.
-    await startServer({ INSIGHTS_DB_DISABLED: '1' });
-    const before1 = await oldBuildSends('before-a', 40);
-    const before2 = await oldBuildSends('before-b', 25);
-    await sleep(300);
-    await stopServer();
+    // Copied by the server of that time, while the store had no database (as on
+    // a server whose Node is too old), so nothing was imported yet.
+    const before1 = await oldServerStored('before-a', 40);
+    const before2 = await oldServerStored('before-b', 25);
     const grownLogSize = fs.statSync(path.join(storage, 'analytics', 'events.ndjson')).size;
     await startServer({ INSIGHTS_IMPORT_READ_BYTES: '16384' });
     const during = await oldBuildSends('during', 30);
@@ -682,7 +706,8 @@ const SMALL = { sessionsJson: 500, sessionsLog: 400, eventsJson: 2500, eventsLog
     const sentOld = [before1, before2, during, late];
     const perSession = sentOld.map((sent) => count('events', 'session_id = ? AND legacy = 1', sent.sessionId));
     const seamFile = fileOf(h, 'events.ndjson');
-    check('the old routes took sessions, events and crash reports before, during and after the import', sentOld.every((sent) => sent.ok) && after1.status === 202 && grownLogSize > seamLogSize,
+    check('sessions, events and crash reports of old versions arrive before, during and after the import; after the old dashboard only the spool is written', sentOld.every((sent) => sent.ok) && after1.status === 202 && grownLogSize > seamLogSize
+        && fs.statSync(path.join(storage, 'analytics', 'events.ndjson')).size === grownLogSize,
         { log_bytes_before: seamLogSize, log_bytes_at_import: grownLogSize });
     check('the import ends exactly where the copies begin: the log is read up to the first line that is also in the spool',
         seamFile.state === 'done' && seamFile.bytes_total === seamLogSize && seamFile.imported === seamExpected.files['events.ndjson'].imported,
@@ -704,7 +729,7 @@ const SMALL = { sessionsJson: 500, sessionsLog: 400, eventsJson: 2500, eventsLog
     await startServer();
     h = await importDone();
     const nothing = h.import.state;
-    const copied = await oldBuildSends('copied', 20);
+    const copied = await oldServerStored('copied', 20);
     await settled();
     await stopServer();
     for (const name of fs.readdirSync(spoolDir())) fs.unlinkSync(path.join(spoolDir(), name));
@@ -750,11 +775,11 @@ const SMALL = { sessionsJson: 500, sessionsLog: 400, eventsJson: 2500, eventsLog
         { got: [got['crashes_metadata.json'].imported, got['crashes_metadata.json'].unreadable, got['crashes_metadata.json'].oversized, got['crashes_metadata.json'].failed],
             expected: broken.files['crashes_metadata.json'] });
     const brokenLines = serverOutput.split('\n').filter((line) => line.includes('import: ') && !line.includes('reading the files') && !line.includes('are imported'));
-    check('exact rows from what was readable, one log line per file that had something wrong, and the old files were not changed (the old server itself closes the half-written line)',
+    check('exact rows from what was readable, one log line per file that had something wrong, and the old files were not changed (a half-written last line included)',
         count('events') === broken.events.length && same(stored().events, expectedStored(broken).events) && count('sessions', 'legacy = 1') === broken.sessions.size
         && brokenLines.length === 5 && h.import.state === 'done' && h.worker.status === 'running'
-        && oldFileHashes().split(' ').filter((hash, index) => hash !== brokenHashes.split(' ')[index]).length === 1
-        && fs.statSync(path.join(storage, 'analytics', 'events.ndjson')).size === broken.eventLogBytes + 1,
+        && oldFileHashes() === brokenHashes
+        && fs.statSync(path.join(storage, 'analytics', 'events.ndjson')).size === broken.eventLogBytes,
         { events: count('events'), expected: broken.events.length, lines: brokenLines.map((line) => line.slice(0, 110)) });
     const afterBroken = await collect(newId(), newId(), [{ name: 'session_start', t: Date.now(), seq: 0, props: {} }]);
     await settled();

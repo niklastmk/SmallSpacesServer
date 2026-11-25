@@ -1,9 +1,8 @@
 // Reads a crash archive and derives its category and group key.
 //
-// extractCrashContext, deriveCategory and deriveGroupKey are copies of the
-// functions of the same name in server.js (which the old crash routes keep
-// using). The copy differs in three places:
-// - it also reports what the archive holds when there is no
+// deriveCategory and deriveGroupKey follow the rules the old dashboard used, so
+// a report falls into the same issue as the imported ones. In addition:
+// - it reports what the archive holds when there is no
 //   CrashContext.runtime-xml;
 // - it reads the macOS crash report (.ips, or the older .crash text) that a
 //   Mac archive holds instead of a CrashContext.runtime-xml;

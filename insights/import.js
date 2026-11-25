@@ -3,13 +3,16 @@
 // start of every pass, and each call does a small, bounded piece of work, so
 // storing what the game sends is never held up for more than a moment.
 //
-//   crashes_metadata.json      a JSON list, rewritten by the old route on every upload
+//   crashes_metadata.json      a JSON list
 //   analytics/sessions.json    a JSON list, the history from before the logs (read-only)
-//   analytics/sessions.ndjson  one JSON object per line, still growing
+//   analytics/sessions.ndjson  one JSON object per line
 //   analytics/events.json      a JSON list (read-only)
-//   analytics/events.ndjson    one JSON object per line, still growing
+//   analytics/events.ndjson    one JSON object per line
 //
-// The old files are only read. They are never changed or deleted.
+// The old files are only read. They are never changed or deleted. Since the old
+// dashboard was removed nothing writes them either: what old game versions send
+// goes to the spool alone (old-game-routes.js). What follows about copied lines
+// is about the days in between, when the old routes wrote both.
 //
 // Progress is the `import` row of the meta table: per file a byte offset and
 // counters, written in the same transaction as the rows of that step. A stop

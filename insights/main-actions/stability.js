@@ -4,8 +4,7 @@
 // (`stability.summary_facts`), the answer is stored through the worker
 // (`stability.save_summary`); nothing here reads stored data.
 //
-// The call follows the crash analysis of the old dashboard (server.js,
-// /api/crashes/reclassify): the Anthropic SDK, one short request, JSON back.
+// The call: the Anthropic SDK, one short request, JSON back.
 let Anthropic = null;
 try {
     Anthropic = require('@anthropic-ai/sdk').default;

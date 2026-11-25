@@ -56,7 +56,7 @@ function publishLog(q) {
 
 // What the row was over time: [{ t, ids }] oldest first, the first from before
 // the history began (t = -Infinity). A change made without the dashboard
-// (the old dashboard, a script) is not in the log; it shows as a last state
+// (a script) is not in the log; it shows as a last state
 // dated by the file's own time.
 function timeline(q) {
     const entries = publishLog(q);

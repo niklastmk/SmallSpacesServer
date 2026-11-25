@@ -79,7 +79,7 @@ The body is the archive itself (`application/zip`, at most 50 MB). The fields ar
 
 ## Old game builds
 
-The old routes behave exactly as before and the old dashboard still reads the old files. In addition, `server.js` calls `legacySessionStart`, `legacyEvents` and `legacyCrash` from `/api/analytics/session/start`, `/api/analytics/batch`, `/api/analytics/event` and `/api/crashes`. Their rows have `legacy = 1`. `TrackGameMode` is stored as `room_enter` (the `legacy_map` in `events.json`). An old crash keeps its old id as `crash_guid`; its platform is what the game sent in `metadata.platform`, otherwise empty. These calls cannot make an old route fail: errors are caught and logged.
+`old-game-routes.js` answers the routes that versions from before November 2026 call: `/api/analytics/event`, `/api/analytics/batch`, `/api/analytics/session/start`, `/api/analytics/session/end` and `/api/crashes`. Paths and answers are what those versions know; everything goes to the spool and nothing else. Their rows have `legacy = 1`. A session end is answered and not stored. The crash archive is stored in `storage/crashes/` and read by the worker. `TrackGameMode` is stored as `room_enter` (the `legacy_map` in `events.json`). An old crash keeps its old id as `crash_guid`; its platform is what the game sent in `metadata.platform`, otherwise empty. The old dashboard, its admin routes and the files it read are retired: `analytics/*.json`, `analytics/*.ndjson`, `crashes_metadata.json` and `crash_groups.json` are no longer written or read (the import took them over); they stay on the volume.
 
 ## Admin
 
@@ -95,11 +95,11 @@ Check: `node scripts/check-insights-import.js [port]`.
 
 ## Dashboard
 
-The interface is served at `/insights` from `../insights-ui/dist` (built with `npm run build` in `../insights-ui`; the built files are committed, like the old dashboard's).
+The interface is served at `/insights` from `../insights-ui/dist` (built with `npm run build` in `../insights-ui`; the built files are committed).
 
 - Sign-in: `POST /api/admin/v2/sign-in` with `{ "key": "<ADMIN_RESET_KEY>" }` sets the cookie `insights_session` for 30 days (HttpOnly, SameSite=Strict, Secure in production). The cookie holds an expiry time and a signature made with the admin key, not the key. Changing `ADMIN_RESET_KEY` ends every session. Ten wrong attempts per address in 15 minutes are allowed.
 - A request that changes something must also carry the header `x-insights: 1`, which the interface always sends.
-- Every route under `/api/admin/v2/` accepts the cookie or the `x-admin-key` header. The old admin routes in `server.js` (`requireAdmin`) accept the cookie too, so the dashboard can publish the featured row and save artists through them.
+- Every route under `/api/admin/v2/` accepts the cookie or the `x-admin-key` header. The admin routes in `server.js` (`requireAdmin`) accept the cookie too, so the dashboard can publish the featured row and save artists through them.
 - `GET /api/admin/v2/frame`: builds, when tracking began, the number of new crash issues, the event names.
 - `GET /api/admin/v2/q/<card>?range=&platform=&build=&compare=`: one card of one page, `{ data, meta, generated_at }`. `POST /api/admin/v2/do/<action>`: a change. Both are answered by the worker from `queries/`; see `queries/README.md`.
 - `GET /api/admin/v2/thumb/<file>` and `GET /api/admin/v2/crash-archive/R-<id>` send a stored file.

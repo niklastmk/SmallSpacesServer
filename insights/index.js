@@ -1,12 +1,12 @@
 // Insights: the new store for what the game sends (events, sessions, crashes).
 //
-// server.js calls mount() once, the legacy*() functions from its old routes,
-// and stop() when the process is asked to end. Nothing here can stop the
-// server from starting or make an old route fail: every entry point catches
-// its own errors and logs them.
+// server.js calls mount() once and stop() when the process is asked to end.
+// Nothing here can stop the server from starting: every entry point catches its
+// own errors and logs them.
 //
 //   spool.js        append-only day files; the main thread writes, the worker reads
 //   routes.js       POST /api/v2/collect, POST /api/v2/crashes, GET /api/admin/v2/health
+//   old-game-routes.js  what game versions from before November 2026 call
 //   admin.js        the dashboard: sign-in, /api/admin/v2/q and /do, the pages under /insights
 //   queries/        what the dashboard asks the database (worker thread)
 //   main-actions/   dashboard actions that need the network or the main server's files
@@ -19,8 +19,8 @@ const { Worker } = require('worker_threads');
 const { createSpool } = require('./spool');
 const routes = require('./routes');
 const admin = require('./admin');
+const oldGameRoutes = require('./old-game-routes');
 
-const LEGACY_EVENTS_PER_LINE = 100;
 const RESTART_MIN_MS = 5 * 1000;
 const RESTART_MAX_MS = 60 * 1000;
 const POKE_GAP_MS = 200;
@@ -128,12 +128,13 @@ function ask(type, params = {}, timeoutMs = 2000) {
 }
 
 // Registers the routes and starts the worker. Returns true when that worked.
-// options: { storageDir, requireApiKey, requireAdmin, clientIp, rateLimit }
+// options: { storageDir, requireApiKey, requireAdmin, uploadLimiter, clientIp, rateLimit }
 function mount(app, options) {
     try {
         storageDir = options.storageDir;
         spool = createSpool(storageDir, console);
         routes.register(app, { ...options, spool, ask, poke, log: console });
+        oldGameRoutes.register(app, { ...options, spool, poke, log: console });
         admin.register(app, { ...options, spool, ask, poke, log: console });
         startWorker();
         console.log(`Insights store enabled (spool: ${spool.dir})`);
@@ -142,85 +143,6 @@ function mount(app, options) {
         console.error('Insights store could not be set up; the rest of the server is not affected:', error);
         return false;
     }
-}
-
-// Appends a record from an old route. Never throws and never rejects.
-function appendLegacy(what, build) {
-    try {
-        if (!spool) return;
-        const records = build();
-        for (const record of records) {
-            spool.append(record).catch((error) => console.error(`Insights: ${what} was not added to the spool:`, error.message));
-        }
-        if (records.length > 0) poke();
-    } catch (error) {
-        console.error(`Insights: ${what} was not added to the spool:`, error.message);
-    }
-}
-
-const cut = (value, max) => (typeof value === 'string' ? value.slice(0, max) : undefined);
-const plainObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
-
-// From POST /api/analytics/session/start, with the session it stored.
-function legacySessionStart(session) {
-    appendLegacy('legacy session', () => [{
-        type: 'legacy_session',
-        legacy: true,
-        received_at: Date.now(),
-        session: {
-            id: cut(session.id, 100),
-            start_time: cut(session.start_time, 40),
-            client_version: cut(session.client_version, 50),
-            platform: cut(session.platform, 50),
-            metadata: plainObject(session.metadata)
-        }
-    }]);
-}
-
-// From POST /api/analytics/batch and /api/analytics/event, with the events they stored.
-function legacyEvents(events) {
-    appendLegacy('legacy events', () => {
-        const receivedAt = Date.now();
-        const records = [];
-        const list = Array.isArray(events) ? events : [];
-        for (let i = 0; i < list.length; i += LEGACY_EVENTS_PER_LINE) {
-            records.push({
-                type: 'legacy_events',
-                legacy: true,
-                received_at: receivedAt,
-                events: list.slice(i, i + LEGACY_EVENTS_PER_LINE).map((event) => ({
-                    id: cut(event.id, 100),
-                    session_id: cut(event.session_id, 100) || 'anonymous',
-                    event_name: cut(event.event_name, 200),
-                    properties: plainObject(event.properties),
-                    timestamp: cut(event.timestamp, 40),
-                    client_version: cut(event.client_version, 50),
-                    platform: cut(event.platform, 50)
-                }))
-            });
-        }
-        return records;
-    });
-}
-
-// From POST /api/crashes after it saved the report: the metadata it stored,
-// the `metadata` object the game sent, and where the archive was written.
-function legacyCrash(crashMetadata, clientMetadata, crashPath) {
-    appendLegacy('legacy crash', () => {
-        const relative = path.relative(storageDir, crashPath);
-        const sent = plainObject(clientMetadata);
-        return [{
-            type: 'legacy_crash',
-            legacy: true,
-            received_at: Date.now(),
-            crash_id: cut(crashMetadata.id, 128),
-            // Inside the storage folder the path is kept relative, so it survives a moved volume.
-            file: relative.startsWith('..') || path.isAbsolute(relative) ? crashPath : relative.split(path.sep).join('/'),
-            // Only what the game said. The old route's own `platform` is not used.
-            platform: typeof sent.platform === 'string' && sent.platform !== '' ? sent.platform.slice(0, 50) : null,
-            metadata: crashMetadata
-        }];
-    });
 }
 
 // Stops the worker (it closes the database first). Resolves when it has
@@ -250,5 +172,4 @@ function stop() {
     });
 }
 
-module.exports = { mount, stop, ask, legacySessionStart, legacyEvents, legacyCrash, hasSession: admin.hasSession,
-    isDashboardRequest: admin.isDashboardRequest };
+module.exports = { mount, stop, ask, hasSession: admin.hasSession, isDashboardRequest: admin.isDashboardRequest };
